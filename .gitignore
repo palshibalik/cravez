@@ -1,0 +1,22 @@
+# ─── Environment — NEVER commit real credentials ──────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── SQLite leftovers (project now uses MongoDB) ──────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ─── Stale build artefacts ────────────────────────────────────────────────────
+dist/
+data/
+
+# ─── OS / editor junk ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+*.log

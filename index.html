@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Cravez — Real-time food delivery tracking platform" />
+  <title>Cravez — Food Delivery</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Outfit:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <!-- App Stylesheet -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="home-at-top">
+
+  <!-- ═══════════════════════════ TOAST ═══════════════════════════ -->
+  <div id="toast" class="toast-pro"></div>
+
+  <!-- ═══════════════════════ LOCATION OVERLAY ═══════════════════ -->
+  <div id="location-overlay" class="modal-overlay" style="display:none;">
+    <div class="location-card">
+      <div class="location-icon">📍</div>
+      <h2>Where are you?</h2>
+      <p>Allow location access to find restaurants near you.</p>
+      <button class="btn btn-primary" onclick="requestLocation()">Use My Location</button>
+      <button class="btn btn-ghost mt-3" onclick="dismissLocation()">Skip for now</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ AUTH MODAL ═══════════════════════ -->
+  <div id="auth-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)hideAuthModal()">
+    <div class="modal-card">
+      <button class="modal-close" onclick="hideAuthModal()">✕</button>
+      <h2 id="auth-title">Welcome Back</h2>
+      <div id="auth-signup-fields" style="display:none;">
+        <input id="auth-name" class="form-input-pro" type="text" placeholder="Your name" autocomplete="name" />
+      </div>
+      <input id="auth-email"    class="form-input-pro" type="email"    placeholder="Email address"  autocomplete="email" />
+      <input id="auth-password" class="form-input-pro" type="password" placeholder="Password"       autocomplete="current-password" />
+      <div id="auth-error" class="auth-error" style="display:none;"></div>
+      <button id="auth-action-btn" class="btn btn-primary w-full" onclick="handleAuthAction()">Sign In</button>
+      <p class="text-sm text-center mt-4" onclick="toggleAuthMode()" style="cursor:pointer; color:var(--color-primary);">Don't have an account? Sign Up</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ PROFILE MODAL ════════════════════ -->
+  <div id="profile-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)hideProfileModal()">
+    <div class="modal-card">
+      <button class="modal-close" onclick="hideProfileModal()">✕</button>
+      <div class="profile-header">
+        <div class="profile-avatar-large" id="profile-initials">U</div>
+        <div>
+          <div class="profile-name-large" id="profile-name-large"></div>
+          <div class="profile-email-small" id="profile-email-small"></div>
+        </div>
+      </div>
+      <div class="profile-row">
+        <span class="profile-label">Phone</span>
+        <span class="profile-val" id="profile-phone-val">Not provided</span>
+      </div>
+      <div class="profile-row">
+        <span class="profile-label">Address</span>
+        <span class="profile-val" id="profile-addr-val">No address saved</span>
+      </div>
+      <div class="profile-row" style="align-items:center;">
+        <span class="profile-label">Veg Only</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="profile-veg-only" onchange="updateProfilePref()" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <button class="btn btn-ghost w-full mt-4" onclick="handleLogout()">Sign Out</button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════ NAVBAR ════════════════════════════ -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a class="nav-logo" onclick="navigate('home')" style="cursor:pointer;">Cravez</a>
+
+      <div id="nav-search-container" style="display:none;" class="nav-search-wrap">
+        <input id="global-search" class="nav-search-input" type="text" placeholder="Search menu…" oninput="handleSearch()" />
+      </div>
+
+      <div class="nav-actions">
+        <button class="btn btn-ghost btn-sm" onclick="navigate('all-restaurants')">All Brands</button>
+        <div id="nav-auth-section">
+          <button class="btn btn-primary btn-sm" onclick="showAuthModal()">Sign In</button>
+        </div>
+        <div id="nav-profile-avatar" class="profile-avatar" style="display:none;" onclick="showProfileModal()"></div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════════════════════ PAGES WRAPPER ═════════════════════ -->
+
+  <!-- ── HOME PAGE ────────────────────────────────────────────── -->
+  <div id="page-home" class="page active">
+
+    <!-- Hero -->
+    <section class="hero-cinema">
+      <div class="hero-video-layer">
+        <video id="video-primary"  class="hero-video" autoplay muted loop playsinline></video>
+        <video id="video-secondary" class="hero-video" autoplay muted loop playsinline></video>
+      </div>
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <h1 class="hero-title">Food that <span class="hero-accent">finds</span> you.</h1>
+        <p class="hero-sub">Real-time tracking. Real restaurants. Real fast.</p>
+        <div class="hero-search-bar">
+          <input id="hero-search" type="text" placeholder="Search restaurants or cuisines…"
+                 oninput="onHeroSearch()" onfocus="focusSearch()" />
+          <button class="btn btn-primary" onclick="focusSearch()">Explore</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trending Food -->
+    <section class="section reveal">
+      <div class="section-header">
+        <h2 class="section-title">Trending Now</h2>
+        <p class="section-sub">Most loved by foodies today</p>
+      </div>
+      <div id="trending-food-list" class="trending-food-grid"></div>
+    </section>
+
+    <!-- Elite Picks -->
+    <section class="section reveal">
+      <div class="section-header">
+        <h2 class="section-title">Elite Picks</h2>
+        <button class="btn-text" onclick="navigate('browse')">See all →</button>
+      </div>
+      <div id="elite-restaurants-list" class="elite-grid"></div>
+    </section>
+
+
+    <!-- Scroll-thread food floaters -->
+    <div class="food-float-overlay">
+      <svg class="food-thread-svg" xmlns="http://www.w3.org/2000/svg">
+        <path class="anim-dash anim-dash-bg" fill="none"/>
+        <path class="anim-dash anim-dash-fg" fill="none"/>
+      </svg>
+      <div class="ffo-burger food-float-item"><img src="burger.png" alt="Burger"></div>
+      <div class="ffo-taco  food-float-item"><img src="taco.png" alt="Taco"></div>
+      <div class="ffo-pizza food-float-item"><img src="pizza.png" alt="Pizza"></div>
+    </div>
+
+    <!-- Bento 3D Section -->
+    <section class="section bento-section reveal">
+      <h2 class="section-title mb-8">Why Cravez?</h2>
+      <div class="bento-3d-grid">
+        <div class="bento-3d-item bento-large">
+          <div class="bento-3d-card">
+            <div class="bento-icon">⚡</div>
+            <h3>Lightning Fast</h3>
+            <p>Live GPS tracking with sub-second updates as your rider moves.</p>
+            <div class="trend-stats"><strong>12.47k+</strong> orders today</div>
+          </div>
+        </div>
+        <div class="bento-3d-item">
+          <div class="bento-3d-card">
+            <div class="bento-icon">🎯</div>
+            <h3>Precision Delivery</h3>
+            <p>Drop-pin address selection for exactly where you are.</p>
+          </div>
+        </div>
+        <div class="bento-3d-item">
+          <div class="bento-3d-card bento-vibe">
+            <div class="bento-icon">🎨</div>
+            <h3>Pick Your Vibe</h3>
+            <div class="vibe-chips">
+              <span class="vibe-chip active">Cozy 🛋</span>
+              <span class="vibe-chip">Party 🎉</span>
+              <span class="vibe-chip">Healthy 🥗</span>
+              <span class="vibe-chip">Indulge 🍩</span>
+            </div>
+          </div>
+        </div>
+        <div class="bento-3d-item">
+          <div class="bento-3d-card bento-deal">
+            <div class="bento-icon">🏷</div>
+            <h3>Flash Deal</h3>
+            <p>Use code <strong>WELCOME50</strong> for ₹50 off your first order.</p>
+            <div class="countdown-timer">04:12:00</div>
+          </div>
+        </div>
+        <div class="bento-3d-item bento-large">
+          <div class="bento-3d-card">
+            <div class="bento-icon">🛡</div>
+            <h3>Quality Guaranteed</h3>
+            <p>Every restaurant is hand-picked for quality and hygiene standards.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-logo">Cravez</div>
+        <p class="footer-tagline">Food that finds you.</p>
+        <div class="footer-links">
+          <a href="#">About</a>
+          <a href="#">Privacy</a>
+          <a href="#">Terms</a>
+          <a href="#">Support</a>
+        </div>
+        <p class="footer-copy">© 2025 Cravez. All rights reserved.</p>
+      </div>
+    </footer>
+  </div><!-- /page-home -->
+
+
+
+  <!-- ── BROWSE PAGE ────────────────────────────────────────────── -->
+  <div id="page-browse" class="page">
+    <div class="page-header">
+      <h1>Restaurants Near You</h1>
+      <div class="filter-bar">
+        <label class="toggle-label">
+          <input type="checkbox" id="veg-only-toggle" onchange="toggleVegOnly()" />
+          <span>Veg Only</span>
+        </label>
+      </div>
+    </div>
+    <div id="search-results-label" class="search-results-label" style="display:none;"></div>
+    <div id="restaurant-grid" class="restaurant-grid"></div>
+    <div id="no-results" class="no-results" style="display:none;">
+      <p>No restaurants found. Try a different search.</p>
+    </div>
+  </div><!-- /page-browse -->
+
+  <!-- ── ALL RESTAURANTS PAGE ───────────────────────────────────── -->
+  <div id="page-all-restaurants" class="page">
+    <div class="page-header">
+      <h1>All Famous Restaurants</h1>
+      <p class="text-muted" style="margin-top: 8px;">Top reputed global and local brands</p>
+    </div>
+    <div id="all-restaurants-grid" class="restaurant-grid"></div>
+  </div><!-- /page-all-restaurants -->
+
+  <!-- ── MENU PAGE ──────────────────────────────────────────────── -->
+  <div id="page-menu" class="page">
+    <div class="menu-header">
+      <button class="back-btn" onclick="navigate('browse')">← Back</button>
+      <div>
+        <h1 id="menu-restaurant-name"></h1>
+        <div id="menu-restaurant-meta" class="menu-meta"></div>
+        <div id="menu-restaurant-address" class="menu-address"></div>
+      </div>
+      <label class="toggle-label">
+        <input type="checkbox" id="menu-veg-only" onchange="filterMenu()" />
+        <span>Veg Only</span>
+      </label>
+    </div>
+
+    <div class="menu-layout">
+      <!-- Items -->
+      <div id="menu-items" class="menu-items-list"></div>
+
+      <!-- Cart Sidebar -->
+      <aside class="cart-sidebar">
+        <h3 class="cart-title">Your Order</h3>
+        <div id="cart-empty" class="cart-empty">
+          <p>Add items to get started 🍽</p>
+        </div>
+        <div id="cart-content" style="display:none;">
+          <div id="cart-items"></div>
+          <div class="cart-coupon">
+            <input id="coupon-code" class="form-input-pro" type="text" placeholder="Coupon code" />
+            <button class="btn btn-ghost btn-sm" onclick="applyCoupon()">Apply</button>
+          </div>
+          <div class="bill-summary">
+            <div class="bill-row"><span>Subtotal</span><span id="bill-subtotal">₹0</span></div>
+            <div class="bill-row"><span>Delivery fee</span><span id="bill-delivery">₹40</span></div>
+            <div class="bill-row"><span>Tax (5%)</span><span id="bill-tax">₹0</span></div>
+            <div class="bill-row" id="discount-row" style="display:none;">
+              <span>Discount</span><span id="bill-discount" style="color:var(--color-success);">-₹0</span>
+            </div>
+            <div class="bill-row bill-total"><span>Total</span><strong id="cart-final-total">₹0</strong></div>
+          </div>
+
+          <!-- Checkout button -->
+          <button id="checkout-btn" class="btn btn-primary w-full mt-4" onclick="showCheckoutForm()">Proceed to Checkout</button>
+
+          <!-- Checkout form (multi-step) -->
+          <div id="checkout-form" style="display:none;">
+
+            <!-- Step 1: Delivery Details -->
+            <div id="checkout-step-1">
+              <h4 class="checkout-step-title">📍 Delivery Details</h4>
+              <input id="delivery-phone" class="form-input-pro" type="tel" placeholder="Phone number" />
+              <div id="checkout-location-map" class="checkout-map"></div>
+              <button class="btn btn-ghost btn-sm w-full mb-2" onclick="locateMe()">📡 Use My Location</button>
+              <input id="delivery-address" class="form-input-pro" type="text" placeholder="Delivery address" />
+              <button class="btn btn-primary w-full" onclick="goToPaymentStep()">Next: Payment →</button>
+            </div>
+
+            <!-- Step 2: Payment -->
+            <div id="checkout-step-2" style="display:none;">
+              <h4 class="checkout-step-title">💳 Payment</h4>
+              <div class="payment-options">
+                <div class="payment-option" data-method="upi"  onclick="selectPayment('upi')">📱 UPI</div>
+                <div class="payment-option" data-method="card" onclick="selectPayment('card')">💳 Card</div>
+                <div class="payment-option" data-method="cod"  onclick="selectPayment('cod')">💵 Cash</div>
+              </div>
+              <button class="btn btn-ghost btn-sm w-full mb-2" onclick="goToDeliveryStep()">← Back</button>
+              <button class="btn btn-primary w-full" onclick="placeOrder()">Place Order 🎉</button>
+            </div>
+          </div>
+        </div><!-- /cart-content -->
+      </aside>
+    </div>
+  </div><!-- /page-menu -->
+
+  <!-- ── TRACKING PAGE ──────────────────────────────────────────── -->
+  <div id="page-tracking" class="page">
+    <div class="tracking-layout">
+
+      <!-- Left: Status -->
+      <div class="tracking-info">
+        <button class="back-btn" onclick="navigate('track-lookup')">← My Orders</button>
+        <h2 id="tracking-restaurant-name" class="tracking-restaurant"></h2>
+
+        <!-- Progress bar -->
+        <div class="progress-bar-wrap">
+          <div id="progress-bar-fill" class="progress-bar-fill" style="width:10%"></div>
+        </div>
+        <div id="current-status-label" class="status-label">Order Placed</div>
+
+        <!-- Driver card -->
+        <div id="driver-card" class="driver-card" style="display:none;">
+          <div class="driver-avatar">🏍</div>
+          <div>
+            <div id="driver-name" class="driver-name"></div>
+            <div id="driver-vehicle" class="driver-vehicle"></div>
+          </div>
+        </div>
+
+        <!-- Order timeline -->
+        <div id="order-timeline" class="order-timeline"></div>
+
+        <!-- Order summary -->
+        <div class="order-summary-box">
+          <h4>Order Summary</h4>
+          <div id="tracking-order-items"></div>
+          <div class="tracking-total-row">
+            <span>Total</span>
+            <strong id="tracking-total"></strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Map -->
+      <div id="real-map-container" class="tracking-map"></div>
+    </div>
+  </div><!-- /page-tracking -->
+
+  <!-- ── TRACK LOOKUP PAGE ─────────────────────────────────────── -->
+  <div id="page-track-lookup" class="page">
+    <div class="track-lookup-inner">
+      <h2>Track an Order</h2>
+
+      <!-- Order History -->
+      <div id="order-history-list" class="order-history-list"></div>
+
+      <!-- Manual lookup -->
+      <div class="lookup-box-pro mt-6">
+        <h3 class="mb-4">Enter Order ID</h3>
+        <div class="lookup-input-row">
+          <input id="lookup-order-id" class="form-input-pro" type="text" placeholder="Order ID…" />
+          <button class="btn btn-primary" onclick="lookupOrder()">Track</button>
+        </div>
+        <div id="lookup-error" class="auth-error mt-3" style="display:none;">Order not found. Check the ID and try again.</div>
+      </div>
+    </div>
+  </div><!-- /page-track-lookup -->
+
+  <!-- ═══════════════════════ MOBILE NAV ════════════════════════ -->
+  <nav class="mobile-nav">
+    <button class="m-nav-item active" onclick="navigate('home')">
+      <span class="m-nav-icon">🏠</span>
+      <span>Home</span>
+    </button>
+    <button class="m-nav-item" onclick="navigate('all-restaurants')">
+      <span class="m-nav-icon">🍔</span>
+      <span>Brands</span>
+    </button>
+    <button class="m-nav-item" onclick="navigate('browse')">
+      <span class="m-nav-icon">🔍</span>
+      <span>Browse</span>
+    </button>
+    <button class="m-nav-item" onclick="navigate('track-lookup')">
+      <span class="m-nav-icon">📦</span>
+      <span>Orders</span>
+    </button>
+  </nav>
+
+  <!-- ═══════════════════════ SCRIPTS ════════════════════════════ -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

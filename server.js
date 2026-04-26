@@ -15,20 +15,22 @@ const rateLimit = require('express-rate-limit');
 const cors      = require('cors');
 
 // ─── Env validation ───────────────────────────────────────────────────────────
-if (!process.env.MONGODB_URI) {
-  throw new Error('MONGODB_URI environment variable is required. Set it in Vercel → Settings → Environment Variables.');
+// In production (Vercel) MONGODB_URI must be set. In dev, fall back to localhost.
+if (process.env.NODE_ENV === 'production' && !process.env.MONGODB_URI) {
+  throw new Error('MONGODB_URI environment variable is required in production. Set it in Vercel → Settings → Environment Variables.');
 }
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET environment variable is required in production.');
 }
-const JWT_SECRET = process.env.JWT_SECRET || 'cravez_dev_secret_change_before_deploy';
+const MONGO_URI  = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/cravez';
+const JWT_SECRET = process.env.JWT_SECRET  || 'cravez_dev_secret_change_before_deploy';
 
 // ─── MongoDB — cached connection for serverless ───────────────────────────────
 // Each Vercel function invocation reuses the same connection if the instance is warm.
 let cachedConn = null;
 async function connectDB() {
   if (cachedConn && mongoose.connection.readyState === 1) return cachedConn;
-  cachedConn = await mongoose.connect(process.env.MONGODB_URI, {
+  cachedConn = await mongoose.connect(MONGO_URI, {
     serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
   });
@@ -49,14 +51,12 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ─── DB middleware — ensures connection before every route ────────────────────
-app.use(async (_req, _res, next) => {
-  try { await connectDB(); next(); }
-  catch (err) { console.error('DB connection failed:', err); next(err); }
-});
+// ─── DB helper for route handlers ───────────────────────────────────────────
+// Called explicitly only inside routes that need MongoDB (auth / orders / user).
+// Static-data routes (brands, menu, nearby restaurants) skip this entirely.
 
 // ─── Static files (local dev only — Vercel serves them via vercel.json routes) ─
-app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html', dotfiles: 'deny' }));
+app.use(express.static(__dirname, { index: 'index.html', dotfiles: 'deny' }));
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 const UserSchema = new mongoose.Schema({
@@ -225,6 +225,7 @@ app.post('/api/auth/register', async (req, res) => {
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
   if (name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
   try {
+    await connectDB();
     const hash = await bcrypt.hash(password, 10);
     const user = await User.create({ name: name.trim(), email, password_hash: hash });
     const token = jwt.sign({ id: user._id, name: user.name, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -240,6 +241,7 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
   try {
+    await connectDB();
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ error: 'User not found' });
     if (!await bcrypt.compare(password, user.password_hash)) return res.status(401).json({ error: 'Invalid credentials' });
@@ -250,6 +252,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/user/profile', verifyToken, async (req, res) => {
   try {
+    await connectDB();
     const user = await User.findById(req.user.id).select('-password_hash');
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ id: user._id, name: user.name, email: user.email, phone: user.phone, address: user.address, lat: user.lat, lng: user.lng, veg_only: user.veg_only });
@@ -258,6 +261,7 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
 
 app.put('/api/user/profile', verifyToken, async (req, res) => {
   try {
+    await connectDB();
     const { phone, address, lat, lng, veg_only } = req.body;
     const updates = {};
     if (phone    !== undefined) updates.phone    = phone;
@@ -344,6 +348,7 @@ app.post('/api/orders', verifyTokenOptional, async (req, res) => {
   if (!restaurantId || !items?.length) return res.status(400).json({ error: 'restaurantId and items are required' });
   if (!restaurantLocation?.lat || !restaurantLocation?.lng) return res.status(400).json({ error: 'Restaurant location is required' });
   try {
+    await connectDB();
     const total = items.reduce((s, i) => s + i.price * i.qty, 0);
     const history = [{ status:'placed', label:'Order Placed', time: new Date() }];
     const order = await Order.create({
@@ -363,6 +368,7 @@ app.post('/api/orders', verifyTokenOptional, async (req, res) => {
 
 app.get('/api/orders/:id', async (req, res) => {
   try {
+    await connectDB();
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json({
@@ -376,6 +382,7 @@ app.get('/api/orders/:id', async (req, res) => {
 
 app.get('/api/user/orders', verifyToken, async (req, res) => {
   try {
+    await connectDB();
     const orders = await Order.find({ user_id: req.user.id }).sort({ createdAt: -1 }).limit(50);
     res.json(orders.map(o => ({ id: o._id, status: o.status, total: o.total, items: o.items, restaurantName: o.real_restaurant_name, date: o.createdAt })));
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
@@ -396,6 +403,7 @@ app.get('/api/orders/:id/stream', async (req, res) => {
 
   // Send current order state immediately
   try {
+    await connectDB();
     const order = await Order.findById(orderId);
     if (order) {
       const payload = {
