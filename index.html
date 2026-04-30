@@ -268,7 +268,7 @@
           <a href="#">About</a>
           <a href="#">Privacy</a>
           <a href="#">Terms</a>
-          <a href="#">Support</a>
+          <a href="#" onclick="showContactModal(); return false;">Contact Us</a>
         </div>
         <p class="footer-copy">© 2025 Cravez. All rights reserved.</p>
       </div>
@@ -639,9 +639,17 @@
 
   <!-- ── ALL RESTAURANTS PAGE ───────────────────────────────────── -->
   <div id="page-all-restaurants" class="page">
-    <div class="page-header">
-      <h1>All Famous Restaurants</h1>
-      <p class="text-muted" style="margin-top: 8px;">Top reputed global and local brands</p>
+    <div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+      <div>
+        <h1>All Famous Restaurants</h1>
+        <p class="text-muted" style="margin-top: 8px;">Top reputed global and local brands</p>
+      </div>
+      <div class="filter-bar">
+        <label class="toggle-label">
+          <input type="checkbox" id="all-veg-only-toggle" onchange="toggleAllBrandsVegOnly()" />
+          <span>Veg Only</span>
+        </label>
+      </div>
     </div>
     <div id="all-restaurants-grid" class="restaurant-grid"></div>
   </div><!-- /page-all-restaurants -->
@@ -812,6 +820,27 @@
       <span>Orders</span>
     </button>
   </nav>
+
+  <!-- ═══════════════════════ CONTACT MODAL ════════════════════ -->
+  <div id="contact-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)hideContactModal()">
+    <div class="modal-card contact-modal-card">
+      <button class="modal-close" onclick="hideContactModal()">✕</button>
+      <h2>Contact Us</h2>
+      <p class="text-muted mb-6">Have a question or feedback? We'd love to hear from you.</p>
+      
+      <div class="contact-info-box mb-6">
+        <div class="contact-icon">✉️</div>
+        <div class="contact-details">
+          <h4>Email Support</h4>
+          <p>worldshein@gmail.com</p>
+        </div>
+      </div>
+
+      <button class="btn btn-primary w-full py-3" onclick="sendContactEmail()">
+        <span class="btn-text">Send Email Now</span>
+      </button>
+    </div>
+  </div>
 
   <!-- ═══════════════════════ SCRIPTS ════════════════════════════ -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

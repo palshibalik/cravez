@@ -589,6 +589,13 @@ function showAuthModal() {
 }
 function hideAuthModal() { document.getElementById('auth-modal').style.display = 'none'; }
 function hideProfileModal() { document.getElementById('profile-modal').style.display = 'none'; }
+function showContactModal() { document.getElementById('contact-modal').style.display = 'flex'; }
+function hideContactModal() { document.getElementById('contact-modal').style.display = 'none'; }
+function sendContactEmail() {
+  window.location.href = "mailto:worldshein@gmail.com?subject=Contact%20Cravez";
+  hideContactModal();
+  notify("Opening email client...", "success");
+}
 function toggleAuthMode()  { state.isSignUp = !state.isSignUp; updateAuthModalContent(); }
 
 function selectAuthRole(role) {
@@ -651,7 +658,13 @@ async function handleAuthAction() {
 
   try {
     const res  = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json();
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      throw new Error(text || 'Server Error');
+    }
     if (!res.ok) throw new Error(data.error || 'Auth failed');
 
     state.token = data.token;
@@ -867,8 +880,8 @@ async function loadAllRestaurants() {
   }
 }
 
-function renderAllRestaurants(brands) {
-  state.allBrands = brands; // store in state for selection
+function renderAllRestaurants(brands, saveState = true) {
+  if (saveState) state.allBrands = brands; // store in state for selection
   const grid = document.getElementById('all-restaurants-grid');
   grid.innerHTML = brands.map(r => {
     const bgUrl = r.image;
@@ -894,6 +907,14 @@ function renderAllRestaurants(brands) {
       </div>
     `;
   }).join('');
+}
+
+function toggleAllBrandsVegOnly() {
+  const isVegOnly = document.getElementById('all-veg-only-toggle').checked;
+  const filtered = isVegOnly 
+    ? state.allBrands.filter(r => r.isVeg)
+    : state.allBrands;
+  renderAllRestaurants(filtered, false);
 }
 
 function selectRestaurantFromBrand(id) {

@@ -893,7 +893,7 @@ app.use((err, _req, res, _next) => {
 });
 
 // ─── Local dev only — Vercel uses module.exports ──────────────────────────────
-if (process.env.NODE_ENV !== 'production') {
+if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => console.log(`\n⚡ Cravez running at http://localhost:${PORT}\n`));
 }
