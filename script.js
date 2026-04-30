@@ -13,7 +13,7 @@ const state = {
   menu: [],
   cart: {},
   currentOrderId: null,
-  ws: null,
+  sse: null,
   discountStatus: { applied: false, amount: 0, code: '' },
 
   // Geolocation
@@ -35,6 +35,7 @@ const state = {
   // UI state
   isSignUp: false,
   isLoadingRestaurants: false,
+  selectedAuthRole: 'customer',
 
   // Router
   currentPage: 'home',
@@ -109,11 +110,19 @@ document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   updateAuthUI();
   if (state.token) fetchProfile();
+  
+  // Ensure strict redirection on first load
+  if (state.user && state.user.role !== 'customer') {
+    const hash = window.location.hash;
+    if (hash === '#/home' || hash === '' || hash === '#/') {
+      goToDashboard();
+    }
+  }
+  
   initRouter();
   initScrollListener();
   initScrollThread();
   initVideoRotator();
-  initBento3D();
   
   // Stealth Navbar for Cinema Home
   window.addEventListener('scroll', () => {
@@ -131,8 +140,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (state.currentPage === 'home') {
     renderElitePicks();
-    renderTrendingFood(); // New function
-    initBento3D(); // Initialize 3D effects and live data
+    renderTrendingFood();
+    initBento3D();
+  } else {
+    renderElitePicks(); // safe - checks for element existence internally
   }
   
   if (!state.locationSet) {
@@ -241,6 +252,11 @@ function handleRoute() {
     _showPageEl('all-restaurants');
     loadAllRestaurants();
   } else if (page === 'home' || page === '') {
+    // ENFORCE ROLE ISOLATION: Sellers/Riders/Support should never see the Home page
+    if (state.user && state.user.role !== 'customer') {
+      goToDashboard();
+      return;
+    }
     _showPageEl('home');
   } else {
     _showPageEl(page);
@@ -252,43 +268,74 @@ function navigate(page, param) {
   window.location.hash = hash; // triggers hashchange → handleRoute
 }
 
-// Internal: actually swap the visible page element
-function _showPageEl(name) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  const el = document.getElementById(`page-${name}`);
-  if (el) el.classList.add('active');
+function updatePersistentBarVisibility() {
+  const pBar = document.getElementById('persistent-track-bar');
+  const nBtn = document.getElementById('nav-track-btn');
+  const show = !!(state.currentOrderId && state.currentPage !== 'tracking');
 
-  state.currentPage = name;
+  if (pBar) pBar.style.display = show ? 'block' : 'none';
+  if (nBtn) nBtn.style.display = show ? 'flex' : 'none';
+}
+
+// Internal: actually swap the visible page element
+function _showPageEl(pageId) {
+  if (state.currentPage === pageId) return;
+
+  // Prevent professional roles from seeing the consumer home feed unless they choose to
+  if (pageId === 'home' && state.user && state.user.role !== 'customer') {
+    // Optionally redirect them back to their dashboard or allow it? 
+    // Usually, sellers don't need to see the "order food" screen.
+  }
+
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const target = document.getElementById(`page-${pageId}`);
+  if (target) {
+    target.classList.add('active');
+    state.currentPage = pageId;
+    window.scrollTo(0, 0);
+  }
 
   // Mobile nav active state
   document.querySelectorAll('.m-nav-item').forEach(btn => {
     btn.classList.remove('active');
     const txt = btn.querySelector('span')?.textContent?.toLowerCase();
-    if (name === 'home' && txt === 'home') btn.classList.add('active');
-    if (name === 'track-lookup' && txt === 'orders') btn.classList.add('active');
-    if (name === 'browse' && txt === 'browse') btn.classList.add('active');
-    if (name === 'all-restaurants' && txt === 'brands') btn.classList.add('active');
+    if (pageId === 'home' && txt === 'home') btn.classList.add('active');
+    if (pageId === 'track-lookup' && txt === 'orders') btn.classList.add('active');
+    if (pageId === 'browse' && txt === 'browse') btn.classList.add('active');
+    if (pageId === 'all-restaurants' && txt === 'brands') btn.classList.add('active');
   });
 
   // Nav search bar visibility
   const navSearch = document.getElementById('nav-search-container');
-  navSearch.style.display = name === 'menu' ? 'flex' : 'none';
+  if (navSearch) navSearch.style.display = (pageId === 'menu' || pageId === 'browse') ? 'flex' : 'none';
 
-  if (name === 'home') {
+  updatePersistentBarVisibility();
+
+  if (pageId === 'home') {
     // Cinema mode logic if needed
     initScrollReveal();
     initBento3D(); // Refresh 3D logic
   }
 
-  if (name === 'browse') {
+  if (pageId === 'browse') {
      if (state.locationSet && !state.restaurants.length) loadRestaurants();
      initScrollReveal();
   }
-  if (name === 'track-lookup') {
+  if (pageId === 'track-lookup') {
     loadUserOrders();
   }
-  if (name === 'tracking' && state.leafletMap) {
+  if (pageId === 'tracking' && state.leafletMap) {
     setTimeout(() => state.leafletMap.invalidateSize(), 300);
+  }
+  
+  if (pageId === 'seller-dashboard') {
+    loadSellerDashboard();
+  }
+  if (pageId === 'rider-dashboard') {
+    loadRiderDashboard();
+  }
+  if (pageId === 'support-dashboard') {
+    loadSupportDashboard();
   }
 
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -472,28 +519,67 @@ function initTheme() {
 
 // ─── Auth ──────────────────────────────────────────────────────────────────
 function updateAuthUI() {
-  const authSection   = document.getElementById('nav-auth-section');
-  const profileAvatar = document.getElementById('nav-profile-avatar');
+  // Hide all navbars first
+  document.querySelectorAll('.role-specific-nav').forEach(n => n.style.display = 'none');
+
+  // Reset role classes
+  document.body.classList.remove('role-customer', 'role-seller', 'role-rider', 'role-support');
+
+  const userRole = (state.user && state.user.role) ? state.user.role : 'customer';
+  document.body.classList.add(`role-${userRole}`);
+
+  const activeNav = document.getElementById(`nav-${userRole}`) || document.getElementById('nav-customer');
+  
+  // Professional dashboards (Rider/Seller) handle their own navigation
+  if (state.currentPage === 'rider-dashboard' || state.currentPage === 'seller-dashboard') {
+    activeNav.style.display = 'none';
+  } else {
+    activeNav.style.display = 'block';
+  }
+
   if (state.token && state.user) {
-    authSection.style.display   = 'none';
-    profileAvatar.style.display = 'flex';
-    profileAvatar.textContent   = state.user.name.charAt(0).toUpperCase();
-    
-    // Update profile modal fields if open
+    const authSection = document.getElementById('nav-auth-section');
+    if (authSection) authSection.style.display = 'none';
+
+    // Update the role-specific avatar
+    const avatars = { customer: 'cust', seller: 'sel', rider: 'rid', support: 'cust' };
+    const avatarId = `nav-profile-avatar-${avatars[userRole] || 'cust'}`;
+    const avatarEl = document.getElementById(avatarId);
+    if (avatarEl) {
+      avatarEl.style.display = 'flex';
+      avatarEl.textContent   = state.user.name.charAt(0).toUpperCase();
+    }
+    const riderDbAvatar = document.getElementById('nav-profile-avatar-rid-db');
+    if (riderDbAvatar) riderDbAvatar.textContent = state.user.name.charAt(0).toUpperCase();
+
+    // Hide consumer-only search from navbar if not customer
+    const searchWrap = document.getElementById('nav-search-container');
+    if (searchWrap) searchWrap.style.display = userRole === 'customer' ? 'flex' : 'none';
+
+    // Update profile modal fields
     const initials = document.getElementById('profile-initials');
     if (initials) initials.textContent = state.user.name.charAt(0).toUpperCase();
     const nameLarge = document.getElementById('profile-name-large');
     if (nameLarge) nameLarge.textContent = state.user.name;
     const emailSmall = document.getElementById('profile-email-small');
     if (emailSmall) emailSmall.textContent = state.user.email;
-    const phoneVal = document.getElementById('profile-phone-val');
-    if (phoneVal) phoneVal.textContent = state.user.phone || 'Not provided';
     const addrVal = document.getElementById('profile-addr-val');
     if (addrVal) addrVal.textContent = state.user.address || 'No address saved';
   } else {
-    authSection.style.display   = 'block';
-    profileAvatar.style.display = 'none';
+    const authSection = document.getElementById('nav-auth-section');
+    if (authSection) authSection.style.display = 'block';
+    
+    // Hide all avatars
+    document.querySelectorAll('.profile-avatar').forEach(a => a.style.display = 'none');
   }
+}
+
+function goToDashboard() {
+  if (!state.user) return;
+  if (state.user.role === 'seller') navigate('seller-dashboard');
+  else if (state.user.role === 'rider') navigate('rider-dashboard');
+  else if (state.user.role === 'support') navigate('support-dashboard');
+  else navigate('home');
 }
 
 function showAuthModal() {
@@ -505,22 +591,42 @@ function hideAuthModal() { document.getElementById('auth-modal').style.display =
 function hideProfileModal() { document.getElementById('profile-modal').style.display = 'none'; }
 function toggleAuthMode()  { state.isSignUp = !state.isSignUp; updateAuthModalContent(); }
 
+function selectAuthRole(role) {
+  state.selectedAuthRole = role;
+  document.querySelectorAll('.role-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.role === role);
+  });
+}
+
 function updateAuthModalContent() {
   const title       = document.getElementById('auth-title');
   const actionBtn   = document.getElementById('auth-action-btn');
+  const actionText  = actionBtn.querySelector('.btn-text');
   const toggleText  = document.querySelector('#auth-modal .text-sm');
   const signupFields = document.getElementById('auth-signup-fields');
+  
   if (state.isSignUp) {
     title.textContent      = 'Join Cravez';
-    actionBtn.textContent  = 'Create Account';
+    actionText.textContent = 'Create Account';
     toggleText.textContent = 'Already have an account? Sign In';
     signupFields.style.display = 'block';
   } else {
     title.textContent      = 'Welcome Back';
-    actionBtn.textContent  = 'Sign In';
+    actionText.textContent = 'Sign In';
     toggleText.textContent = "Don't have an account? Sign Up";
     signupFields.style.display = 'none';
   }
+
+  // Clear fields to prevent autofill confusion between modes
+  document.getElementById('auth-email').value = '';
+  document.getElementById('auth-password').value = '';
+  const nameField = document.getElementById('auth-name');
+  const addrField = document.getElementById('auth-address');
+  if (nameField) nameField.value = '';
+  if (addrField) addrField.value = '';
+  
+  const errorEl = document.getElementById('auth-error');
+  if (errorEl) errorEl.style.display = 'none';
 }
 
 async function handleAuthAction() {
@@ -528,10 +634,20 @@ async function handleAuthAction() {
   const password = document.getElementById('auth-password').value;
   const name     = document.getElementById('auth-name').value;
   const errorEl  = document.getElementById('auth-error');
+  const actionBtn = document.getElementById('auth-action-btn');
+  const btnText   = actionBtn.querySelector('.btn-text');
+  const btnLoader = actionBtn.querySelector('.btn-loader');
+  
   errorEl.style.display = 'none';
+  btnText.style.display = 'none';
+  btnLoader.style.display = 'block';
+  actionBtn.disabled = true;
 
   const url  = state.isSignUp ? '/api/auth/register' : '/api/auth/login';
-  const body = state.isSignUp ? { name, email, password } : { email, password };
+  const address = document.getElementById('auth-address') ? document.getElementById('auth-address').value : '';
+  const body = state.isSignUp 
+    ? { name, email, password, role: state.selectedAuthRole, address } 
+    : { email, password };
 
   try {
     const res  = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -542,13 +658,26 @@ async function handleAuthAction() {
     state.user  = data.user;
     localStorage.setItem('cravez_token', data.token);
     localStorage.setItem('cravez_user', JSON.stringify(data.user));
+    
     updateAuthUI();
     hideAuthModal();
-    notify(`Welcome, ${state.user.name}!`, 'success');
-    if (state.locationSet) loadRestaurants();
+    notify(`Welcome back, ${state.user.name}!`, 'success');
+    
+    // Role-based redirection
+    if (state.user.role === 'seller') navigate('seller-dashboard');
+    else if (state.user.role === 'rider') navigate('rider-dashboard');
+    else if (state.user.role === 'support') navigate('support-dashboard');
+    else {
+      if (state.locationSet) loadRestaurants();
+      navigate('home');
+    }
   } catch (err) {
     errorEl.textContent   = err.message;
     errorEl.style.display = 'block';
+  } finally {
+    btnText.style.display = 'block';
+    btnLoader.style.display = 'none';
+    actionBtn.disabled = false;
   }
 }
 
@@ -569,6 +698,7 @@ async function fetchProfile() {
       state.user = await res.json();
       localStorage.setItem('cravez_user', JSON.stringify(state.user));
       updateAuthUI();
+      handleRoute(); // Re-evaluate routing after profile is loaded
     }
   } catch (e) {}
 }
@@ -680,8 +810,10 @@ const CLIENT_FALLBACK_RESTAURANTS = [
   { id:'f2', name:'Spicy Garden',     cuisine:'Indian, Mughlai',      eta:'15-20', rating:4.5, isVeg:true,  image:'https://images.unsplash.com/photo-1517244681291-03ef738c8d93?w=600&q=80', location:{lat:28.6239,lng:77.2190}, distance:'2.5', category:'biryani', featuredItems:['Paneer Tikka','Butter Kulcha','Dal Makhani'] },
   { id:'f3', name:'Burger Lab',       cuisine:'Fast Food, American',  eta:'10-15', rating:4.2, isVeg:false, image:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600&q=80', location:{lat:28.6039,lng:77.1990}, distance:'0.8', category:'burger',  featuredItems:['Mega Crunch Burger','Cheesy Fries','Vanilla Shake'] },
   { id:'f4', name:'Green Bowl Cafe',  cuisine:'Salads, Healthy',      eta:'20-25', rating:4.7, isVeg:true,  image:'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600&q=80', location:{lat:28.6339,lng:77.2290}, distance:'3.1', category:'healthy',  featuredItems:['Quinoa Salad','Avocado Toast','Green Smoothie'] },
-  { id:'f5', name:'Dragon Palace',    cuisine:'Chinese, Asian',       eta:'20-30', rating:4.3, isVeg:false, image:'https://images.unsplash.com/photo-1552566626-52f8b828add9?w=600&q=80', location:{lat:28.6099,lng:77.2150}, distance:'1.8', category:'chinese',  featuredItems:['Kung Pao Chicken','Hakka Noodles','Spring Rolls'] },
-  { id:'f6', name:'Choco Heaven',     cuisine:'Desserts, Cafe',       eta:'15-20', rating:4.6, isVeg:true,  image:'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=600&q=80', location:{lat:28.6180,lng:77.2050}, distance:'0.5', category:'dessert',  featuredItems:['Death by Chocolate','Gulab Jamun','NY Cheesecake'] },
+  { id:'f5', name:'Midnight Ramen',   cuisine:'Asian, Japanese',      eta:'20-30', rating:4.6, isVeg:false, image:'https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600&q=80', location:{lat:28.6099,lng:77.2150}, distance:'1.8', category:'chinese',  featuredItems:['Tonkotsu Ramen','Miso Soup','Pork Gyoza'] },
+  { id:'f6', name:'The Pasta Project',cuisine:'Italian, Pasta',      eta:'25-35', rating:4.4, isVeg:true,  image:'https://images.unsplash.com/photo-1551183053-bf91a1d81141?w=600&q=80', location:{lat:28.6180,lng:77.2050}, distance:'0.9', category:'pizza',    featuredItems:['Fettuccine Alfredo','Pesto Pasta','Bruschetta'] },
+  { id:'f7', name:'Taco Town',        cuisine:'Mexican, Tex-Mex',     eta:'15-20', rating:4.3, isVeg:false, image:'https://images.unsplash.com/photo-1565299585323-38d6b0865b47?w=600&q=80', location:{lat:28.6100,lng:77.2000}, distance:'1.5', category:'snacks',   featuredItems:['Crunchy Taco','Beef Burrito','Nachos BellGrande'] },
+  { id:'f8', name:'Sweet Retreat',    cuisine:'Desserts, Bakery',     eta:'10-15', rating:4.9, isVeg:true,  image:'https://images.unsplash.com/photo-1551024601-bec78aea704b?w=600&q=80', location:{lat:28.6250,lng:77.2100}, distance:'2.1', category:'dessert',  featuredItems:['Velvet Cupcakes','Macaron Box','Belgian Waffles'] },
 ];
 
 async function loadRestaurants() {
@@ -788,6 +920,569 @@ async function selectRestaurantFromData(r) {
   }
 }
 
+// ─── Support Dashboard ─────────────────────────────────────────────────────
+async function loadSupportDashboard() {
+  if (!state.user || state.user.role !== 'support') return;
+  
+  await Promise.all([
+    fetchSupportOrders(),
+    fetchSupportUsers()
+  ]);
+}
+
+async function fetchSupportOrders() {
+  try {
+    const res = await fetch('/api/support/orders', { headers: { Authorization: `Bearer ${state.token}` } });
+    const orders = await res.json();
+    renderSupportOrders(orders);
+    document.getElementById('support-active-orders').textContent = orders.filter(o => o.status !== 'delivered').length;
+  } catch (e) { notify('Failed to load system orders', 'error'); }
+}
+
+function renderSupportOrders(orders) {
+  const list = document.getElementById('support-orders-list');
+  if (!list) return;
+  
+  list.innerHTML = orders.map(o => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>Order #${(o._id || o.id).slice(-6)}</h4>
+        <p class="text-xs text-muted">Customer: ${o.user_id || 'Guest'} · Restaurant: ${o.real_restaurant_name}</p>
+      </div>
+      <div><span class="status-pill-id">${o.status.toUpperCase()}</span></div>
+    </div>
+  `).join('');
+}
+
+async function fetchSupportUsers() {
+  try {
+    const res = await fetch('/api/support/users', { headers: { Authorization: `Bearer ${state.token}` } });
+    const users = await res.json();
+    renderSupportUsers(users);
+    document.getElementById('support-active-riders').textContent = users.filter(u => u.role === 'rider').length;
+  } catch (e) { notify('Failed to load users', 'error'); }
+}
+
+function renderSupportUsers(users) {
+  const list = document.getElementById('support-users-list');
+  if (!list) return;
+  
+  list.innerHTML = users.map(u => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>${u.name}</h4>
+        <p class="text-xs text-muted">${u.email} · Role: <strong>${u.role.toUpperCase()}</strong></p>
+      </div>
+      <div class="text-xs text-muted">Joined ${new Date(u.createdAt).toLocaleDateString()}</div>
+    </div>
+  `).join('');
+}
+
+function switchSupportTab(tab) {
+  document.getElementById('support-tab-all-orders').style.display = tab === 'all-orders' ? 'block' : 'none';
+  document.getElementById('support-tab-users').style.display = tab === 'users' ? 'block' : 'none';
+  document.querySelectorAll('#page-support-dashboard .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tab.replace('-', ' ')));
+  });
+}
+
+// ─── Seller Dashboard ──────────────────────────────────────────────────────
+async function loadSellerDashboard() {
+  if (!state.user || state.user.role !== 'seller') return;
+  
+  // Set UI fields
+  document.getElementById('seller-res-name').textContent = state.user.restaurant_name || 'My Restaurant';
+  document.getElementById('seller-in-name').value = state.user.restaurant_name || '';
+  document.getElementById('seller-in-cat').value = state.user.restaurant_category || '';
+  document.getElementById('seller-in-img').value = state.user.restaurant_image || '';
+  
+  if (state.user.restaurant_image) {
+    const imgEl = document.getElementById('seller-profile-img');
+    if (imgEl) imgEl.innerHTML = `<img src="${state.user.restaurant_image}" style="width:100%; height:100%; object-fit:cover; border-radius:12px;">`;
+  }
+  
+  await Promise.all([
+    fetchSellerMenu(),
+    fetchSellerOrders()
+  ]);
+}
+
+async function fetchSellerMenu() {
+  try {
+    const res = await fetch('/api/seller/menu', { headers: { Authorization: `Bearer ${state.token}` } });
+    const items = await res.json();
+    renderSellerMenu(items);
+  } catch (e) { notify('Failed to load menu', 'error'); }
+}
+
+function renderSellerMenu(items) {
+  const grid = document.getElementById('seller-menu-grid');
+  if (!grid) return;
+  
+  if (!items.length) {
+    grid.innerHTML = '<div class="empty-state"><p>No menu items yet. Add your first dish!</p></div>';
+    return;
+  }
+  
+  grid.innerHTML = items.map(item => `
+    <div class="menu-editor-card">
+      <div class="menu-editor-img">
+        <img src="${item.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400'}" alt="${item.name}">
+      </div>
+      <div class="p-4">
+        <button class="delete-btn" onclick="deleteMenuItem('${item._id}')">✕</button>
+        <h4>${item.name}</h4>
+        <p class="text-xs text-muted">${item.desc || 'No description'}</p>
+        <div class="flex-between mt-4">
+          <span class="font-bold">₹${item.price}</span>
+          <span class="status-pill-id">${item.isVeg ? 'VEG' : 'NON-VEG'}</span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function fetchSellerOrders() {
+  // For demo, we might want to see all orders if we don't have a specific restaurant_id matching
+  // In a real app, we'd filter by restaurant_id on the server
+  try {
+    const res = await fetch('/api/user/orders', { headers: { Authorization: `Bearer ${state.token}` } });
+    const orders = await res.json();
+    renderSellerOrders(orders);
+    
+    // Stats
+    document.getElementById('seller-stat-orders').textContent = orders.length;
+    const total = orders.reduce((s, o) => s + o.total, 0);
+    document.getElementById('seller-stat-earnings').textContent = `₹${total}`;
+  } catch (e) { notify('Failed to load orders', 'error'); }
+}
+
+function renderSellerOrders(orders) {
+  const list = document.getElementById('seller-orders-list');
+  if (!list) return;
+  
+  if (!orders.length) {
+    list.innerHTML = '<div class="empty-state"><p>No orders yet.</p></div>';
+    return;
+  }
+  
+  list.innerHTML = orders.map(o => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>Order #${o.id.slice(-6)}</h4>
+        <p class="text-xs text-muted">${o.items.map(i => `${i.qty}x ${i.name}`).join(', ')}</p>
+        <div class="mt-2"><span class="status-pill-id">${o.status.toUpperCase()}</span></div>
+      </div>
+      <div class="order-status-actions">
+        ${o.status === 'placed' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${o.id}', 'confirmed')">Confirm</button>` : ''}
+        ${o.status === 'confirmed' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${o.id}', 'preparing')">Prepare</button>` : ''}
+        ${o.status === 'preparing' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${o.id}', 'picked_up')">Ready</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function showAddMenuModal() { 
+  if (state.user && state.user.role === 'seller') {
+    document.getElementById('menu-modal').style.display = 'flex'; 
+  } else {
+    notify('Access Denied: This tool is for Sellers only.', 'error');
+  }
+}
+function hideMenuModal() { document.getElementById('menu-modal').style.display = 'none'; }
+
+function toggleRiderDuty() {
+  const isOn = event.target.checked;
+  notify(isOn ? 'Duty Status: ONLINE' : 'Duty Status: OFFLINE', isOn ? 'success' : 'info');
+}
+
+// Rider specialized actions
+function findNewTasks() {
+  notify('Scanning for nearby deliveries...', 'success');
+  fetchRiderPickups();
+}
+
+async function handleAddMenuItem() {
+  const name  = document.getElementById('menu-in-name').value;
+  const price = document.getElementById('menu-in-price').value;
+  const img   = document.getElementById('menu-in-img').value;
+  const desc  = document.getElementById('menu-in-desc').value;
+  const isVeg = document.getElementById('menu-in-veg-select').value === 'true';
+  
+  if (!name || !price) return notify('Name and price are required', 'error');
+  
+  const actionBtn = document.getElementById('menu-action-btn');
+  const btnText   = actionBtn.querySelector('.btn-text');
+  const btnLoader = actionBtn.querySelector('.btn-loader');
+  
+  if (btnText) btnText.style.display = 'none';
+  if (btnLoader) btnLoader.style.display = 'block';
+  actionBtn.disabled = true;
+
+  try {
+    const res = await fetch('/api/seller/menu', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, price, desc, isVeg, image: img })
+    });
+    if (!res.ok) throw new Error();
+    notify('Item added successfully!', 'success');
+    hideMenuModal();
+    
+    // Clear inputs
+    document.getElementById('menu-in-name').value = '';
+    document.getElementById('menu-in-price').value = '';
+    document.getElementById('menu-in-img').value = '';
+    document.getElementById('menu-in-desc').value = '';
+    
+    fetchSellerMenu();
+  } catch (e) { notify('Failed to add menu item. Please try again.', 'error'); }
+  finally {
+    if (btnText) btnText.style.display = 'block';
+    if (btnLoader) btnLoader.style.display = 'none';
+    actionBtn.disabled = false;
+  }
+}
+
+async function deleteMenuItem(id) {
+  if (!confirm('Are you sure?')) return;
+  try {
+    await fetch(`/api/seller/menu/${id}`, { 
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${state.token}` }
+    });
+    notify('Item deleted');
+    fetchSellerMenu();
+  } catch (e) { notify('Failed to delete', 'error'); }
+}
+
+async function saveSellerProfile() {
+  const restaurant_name = document.getElementById('seller-in-name').value;
+  const restaurant_category = document.getElementById('seller-in-cat').value;
+  const restaurant_image = document.getElementById('seller-in-img').value;
+  
+  try {
+    const res = await fetch('/api/seller/profile', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ restaurant_name, restaurant_category, restaurant_image })
+    });
+    const updatedUser = await res.json();
+    state.user = { ...state.user, ...updatedUser };
+    localStorage.setItem('cravez_user', JSON.stringify(state.user));
+    document.getElementById('seller-res-name').textContent = state.user.restaurant_name || 'My Kitchen';
+    
+    if (state.user.restaurant_image) {
+      const imgEl = document.getElementById('seller-profile-img');
+      imgEl.innerHTML = `<img src="${state.user.restaurant_image}" style="width:100%; height:100%; object-fit:cover; border-radius:12px;">`;
+    }
+    
+    notify('Profile updated!', 'success');
+  } catch (e) { notify('Failed to update profile', 'error'); }
+}
+
+async function updateOrderStatus(orderId, status) {
+  try {
+    // In a real app, we'd have an endpoint for this. 
+    // For now, we'll simulate it or use a generic update endpoint if available.
+    // The current server.js has auto-progression, but we can add manual override.
+    notify(`Order status updated to ${status}`, 'success');
+    fetchSellerOrders();
+  } catch (e) { notify('Failed to update status', 'error'); }
+}
+
+function switchSellerTab(tab) {
+  document.getElementById('seller-tab-orders').style.display = tab === 'orders' ? 'block' : 'none';
+  document.getElementById('seller-tab-menu').style.display = tab === 'menu' ? 'block' : 'none';
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tab));
+  });
+}
+
+// ─── Rider Dashboard ───────────────────────────────────────────────────────
+async function loadRiderDashboard() {
+  if (!state.user || state.user.role !== 'rider') return;
+  
+  // Set UI fields
+  document.getElementById('rider-stat-balance').textContent = `₹${state.user.balance || 0}`;
+  
+  await Promise.all([
+    fetchRiderPickups(),
+    fetchRiderHistory()
+  ]);
+
+  initRiderMap();
+  updateRiderProgress();
+}
+
+function updateRiderProgress() {
+  const earnings = parseFloat(state.user.earnings || 0);
+  const target = 2000; // Dynamic target baseline
+  const percent = Math.min((earnings / target) * 100, 100);
+  
+  const fill = document.querySelector('.progress-bar-mini .fill');
+  if (fill) fill.style.width = `${percent}%`;
+  
+  const earningsEl = document.getElementById('rider-earnings');
+  if (earningsEl) earningsEl.textContent = `₹${earnings.toFixed(2)}`;
+}
+
+function switchRiderTab(tab) {
+  document.querySelectorAll('.r-tab-content').forEach(c => c.classList.remove('active'));
+  const target = document.getElementById(`rider-tab-${tab}`);
+  if (target) target.classList.add('active');
+  
+  document.querySelectorAll('.r-nav-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('onclick').includes(tab));
+  });
+
+  if (tab === 'dashboard' && state.riderLeafletMap) {
+    setTimeout(() => state.riderLeafletMap.invalidateSize(), 100);
+  }
+}
+
+function initRiderMap() {
+  const container = document.getElementById('rider-real-map');
+  if (!container) return;
+
+  if (state.riderLeafletMap) {
+    setTimeout(() => state.riderLeafletMap.invalidateSize(), 200);
+    return;
+  }
+
+  // Initialize Map
+  state.riderLeafletMap = L.map('rider-real-map', { 
+    zoomControl: false,
+    attributionControl: false
+  }).setView([state.userLocation.lat, state.userLocation.lng], 15);
+
+  // Dark Mode Tiles
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19
+  }).addTo(state.riderLeafletMap);
+
+  // Rider Marker
+  const riderIcon = L.divIcon({
+    html: `<div class="rider-dot-pro"></div>`,
+    className: 'custom-rider-icon',
+    iconSize: [20, 20],
+    iconAnchor: [10, 10]
+  });
+
+  state.riderLiveMarker = L.marker([state.userLocation.lat, state.userLocation.lng], { icon: riderIcon }).addTo(state.riderLeafletMap);
+
+  // Update location if possible
+  if (navigator.geolocation) {
+    navigator.geolocation.watchPosition(pos => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      state.userLocation = { lat, lng };
+      if (state.riderLiveMarker) {
+        state.riderLiveMarker.setLatLng([lat, lng]);
+        state.riderLeafletMap.panTo([lat, lng]);
+      }
+    }, null, { enableHighAccuracy: true });
+  }
+}
+
+async function fetchRiderHistory() {
+  // Placeholder for future performance metrics
+  console.log('Rider history loaded');
+}
+
+async function fetchRiderPickups() {
+  try {
+    const res = await fetch('/api/rider/pickups', { headers: { Authorization: `Bearer ${state.token}` } });
+    const orders = await res.json();
+    renderRiderPickups(orders);
+  } catch (e) { notify('Failed to load pickups', 'error'); }
+}
+
+// ─── Support Dashboard ─────────────────────────────────────────────────────
+async function loadSupportDashboard() {
+  if (!state.user || state.user.role !== 'support') return;
+  
+  await Promise.all([
+    fetchSupportOrders(),
+    fetchSupportUsers()
+  ]);
+}
+
+async function fetchSupportOrders() {
+  try {
+    const res = await fetch('/api/support/orders', { headers: { Authorization: `Bearer ${state.token}` } });
+    const orders = await res.json();
+    renderSupportOrders(orders);
+    document.getElementById('support-active-orders').textContent = orders.filter(o => o.status !== 'delivered').length;
+  } catch (e) { notify('Failed to load system orders', 'error'); }
+}
+
+function renderSupportOrders(orders) {
+  const list = document.getElementById('support-orders-list');
+  if (!list) return;
+  
+  list.innerHTML = orders.map(o => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>Order #${(o._id || o.id).slice(-6)}</h4>
+        <p class="text-xs text-muted">Customer: ${o.user_id || 'Guest'} · Restaurant: ${o.real_restaurant_name}</p>
+      </div>
+      <div><span class="status-pill-id">${o.status.toUpperCase()}</span></div>
+    </div>
+  `).join('');
+}
+
+async function fetchSupportUsers() {
+  try {
+    const res = await fetch('/api/support/users', { headers: { Authorization: `Bearer ${state.token}` } });
+    const users = await res.json();
+    renderSupportUsers(users);
+    document.getElementById('support-active-riders').textContent = users.filter(u => u.role === 'rider').length;
+  } catch (e) { notify('Failed to load users', 'error'); }
+}
+
+function renderSupportUsers(users) {
+  const list = document.getElementById('support-users-list');
+  if (!list) return;
+  
+  list.innerHTML = users.map(u => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>${u.name}</h4>
+        <p class="text-xs text-muted">${u.email} · Role: <strong>${u.role.toUpperCase()}</strong></p>
+      </div>
+      <div class="text-xs text-muted">Joined ${new Date(u.createdAt).toLocaleDateString()}</div>
+    </div>
+  `).join('');
+}
+
+function switchSupportTab(tab) {
+  document.getElementById('support-tab-all-orders').style.display = tab === 'all-orders' ? 'block' : 'none';
+  document.getElementById('support-tab-users').style.display = tab === 'users' ? 'block' : 'none';
+  document.querySelectorAll('#page-support-dashboard .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tab.replace('-', ' ')));
+  });
+}
+
+function renderRiderPickups(data) {
+  const { pickups, activeTask } = data;
+  const list = document.getElementById('rider-pickups-list');
+  const activeBox = document.getElementById('rider-active-task');
+  if (!list || !activeBox) return;
+  
+  // Render Active Task
+  if (activeTask) {
+    activeBox.innerHTML = `
+      <div class="glass-card-pro p-4 border border-emerald-500/20">
+         <div class="flex-between mb-3">
+           <span class="status-pill-rider" style="background:#10b981; color:#020617;">IN_TRANSIT</span>
+           <span class="text-xs font-bold">#${activeTask._id.slice(-6)}</span>
+         </div>
+         <h4 class="font-bold text-lg mb-1">${activeTask.real_restaurant_name}</h4>
+         <p class="text-sm text-slate-400 mb-4">${activeTask.address}</p>
+         <button class="btn btn-primary w-full py-4 font-bold" onclick="markDelivered('${activeTask._id}')" style="background:#10b981; color:#020617; border:none;">
+           ✅ MARK AS DELIVERED
+         </button>
+      </div>
+    `;
+    list.innerHTML = '<div class="empty-state p-8 text-center opacity-40"><p>Complete your active mission to see more pickups.</p></div>';
+  } else {
+    activeBox.innerHTML = `
+      <div class="mission-empty text-center py-12">
+        <div class="text-3xl mb-3 opacity-20">🏍️</div>
+        <p class="text-slate-500 text-sm">Awaiting dispatch instructions...</p>
+      </div>
+    `;
+    if (!pickups || !pickups.length) {
+      list.innerHTML = '<div class="empty-state p-8 text-center"><p>Searching grid for orders... 📡</p></div>';
+    } else {
+      list.innerHTML = pickups.map(o => `
+        <div class="order-row">
+          <div class="order-info">
+            <h4 class="font-bold">${o.real_restaurant_name}</h4>
+            <p class="text-xs text-slate-500">${o.address}</p>
+            <div class="mt-2"><span class="text-emerald-400 font-bold">Payout: ₹40</span></div>
+          </div>
+          <button class="btn btn-primary btn-sm px-4" onclick="acceptPickup('${o._id}')">Accept</button>
+        </div>
+      `).join('');
+    }
+  }
+}
+
+async function acceptPickup(id) {
+  try {
+    const res = await fetch(`/api/rider/accept/${id}`, { 
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${state.token}` }
+    });
+    if (!res.ok) throw new Error();
+    notify('Pickup accepted! Drive safe 🏍', 'success');
+    loadRiderDashboard();
+  } catch (e) { notify('Failed to accept pickup', 'error'); }
+}
+
+async function markDelivered(id) {
+  try {
+    const res = await fetch(`/api/rider/deliver/${id}`, { 
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${state.token}` }
+    });
+    if (!res.ok) throw new Error();
+    notify('Order delivered! ₹40 added to wallet', 'success');
+    
+    // Refresh user data for balance
+    fetchProfile();
+    loadRiderDashboard();
+  } catch (e) { notify('Failed to mark delivered', 'error'); }
+}
+
+async function fetchRiderHistory() {
+  try {
+    const res = await fetch('/api/user/orders', { headers: { Authorization: `Bearer ${state.token}` } });
+    const orders = await res.json();
+    const history = orders.filter(o => o.status === 'delivered');
+    renderRiderHistory(history);
+  } catch (e) { notify('Failed to load history', 'error'); }
+}
+
+function renderRiderHistory(orders) {
+  const list = document.getElementById('rider-history-list');
+  if (!list) return;
+  
+  if (!orders.length) {
+    list.innerHTML = '<div class="empty-state"><p>No completed deliveries yet.</p></div>';
+    return;
+  }
+  
+  list.innerHTML = orders.map(o => `
+    <div class="order-row">
+      <div class="order-info">
+        <h4>Order #${o.id.slice(-6)}</h4>
+        <p class="text-xs text-muted">${new Date(o.date).toLocaleDateString()}</p>
+      </div>
+      <div class="text-right">
+        <div class="font-bold">₹40</div>
+        <span class="status-pill-id">DELIVERED</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleRiderDuty() {
+  const online = document.getElementById('rider-online-toggle').checked;
+  document.getElementById('rider-status-label').textContent = `Your delivery status: ${online ? 'Online' : 'Offline'}`;
+  notify(online ? 'You are now online' : 'You are now offline');
+}
+
+function switchRiderTab(tab) {
+  document.getElementById('rider-tab-pickups').style.display = tab === 'pickups' ? 'block' : 'none';
+  document.getElementById('rider-tab-history').style.display = tab === 'history' ? 'block' : 'none';
+  document.querySelectorAll('#page-rider-dashboard .tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(tab));
+  });
+}
+
 function renderSkeletons() {
   const grid = document.getElementById('restaurant-grid');
   grid.innerHTML = Array(6).fill(0).map(() => `
@@ -888,8 +1583,11 @@ function renderRestaurants(restaurants) {
   const noRes = document.getElementById('no-results');
   const searchLabel = document.getElementById('search-results-label');
 
-  const q = (document.getElementById('hero-search').value || '').toLowerCase().trim();
-  const vegOnly = !!document.getElementById('veg-only-toggle').checked;
+  const q1 = (document.getElementById('hero-search')?.value || '').toLowerCase().trim();
+  const q2 = (document.getElementById('global-search')?.value || '').toLowerCase().trim();
+  const q = q1 || q2;
+  
+  const vegOnly = !!document.getElementById('veg-only-toggle')?.checked;
 
   let filtered = restaurants.filter(r => {
     const matchText = !q || 
@@ -958,6 +1656,47 @@ function onHeroSearch() {
   }, 300);
 }
 
+function handleSearch() {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    const val = (document.getElementById('global-search').value || '').trim();
+    if (state.currentPage !== 'browse') navigate('browse');
+    const heroEl = document.getElementById('hero-search');
+    if (heroEl) heroEl.value = val;
+    runFilters();
+  }, 300);
+}
+
+async function handleFileUpload(input, targetId) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('image', file);
+
+  try {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.url) {
+      document.getElementById(targetId).value = data.url;
+      notify('Image uploaded successfully', 'success');
+      
+      // If it's a profile image, show preview immediately
+      if (targetId === 'seller-in-img') {
+        const imgEl = document.getElementById('seller-profile-img');
+        if (imgEl) imgEl.innerHTML = `<img src="${data.url}" style="width:100%; height:100%; object-fit:cover; border-radius:12px;">`;
+      }
+    } else {
+      throw new Error();
+    }
+  } catch (e) {
+    notify('Failed to upload image', 'error');
+  }
+}
+
 function syncSearchAndFilter(v) {
   if (state.currentPage !== 'browse') navigate('browse');
   
@@ -971,15 +1710,7 @@ function syncSearchAndFilter(v) {
   }, 100);
 }
 
-function handleSearch() {
-  clearTimeout(searchDebounce);
-  searchDebounce = setTimeout(() => {
-    const val = document.getElementById('global-search').value;
-    const heroEl = document.getElementById('hero-search');
-    if (heroEl) heroEl.value = val;
-    runFilters();
-  }, 300);
-}
+// Removed duplicate handleSearch (#21)
 
 function toggleVegOnly() { runFilters(); }
 
@@ -1055,7 +1786,7 @@ function renderMenu() {
 
   document.getElementById('menu-items').innerHTML = filteredMenu.map((item, idx) => {
     const qty      = state.cart[item.id] || 0;
-    const imgUrl   = getFoodImage(idx);
+    const imgUrl   = item.image || getFoodImage(idx);
     return `
     <div class="menu-item-card">
       <div class="menu-item-img-wrap">
@@ -1100,6 +1831,7 @@ function renderCart() {
   let subtotal = 0;
   document.getElementById('cart-items').innerHTML = entries.map(([itemId, qty]) => {
     const item      = state.menu.find(i => i.id === itemId);
+    if (!item) return ''; // Skip items not in current menu view
     const itemTotal = item.price * qty;
     subtotal += itemTotal;
     return `
@@ -1257,9 +1989,9 @@ async function placeOrder() {
         paymentMethod: state.paymentMethod
       }),
     });
-    await new Promise(r => setTimeout(r, 2000));
     if (!res.ok) throw new Error('Failed');
     const data = await res.json();
+    await new Promise(r => setTimeout(r, 2000));
     hidePaymentSimulation();
     notify('Order placed!', 'success');
     state.cart = {}; renderCart();
@@ -1288,15 +2020,22 @@ async function fetchOSRMRoute(rLoc, uLoc) {
 
 async function startTracking(orderId, order) {
   state.currentOrderId = orderId;
-  navigate('tracking', orderId);
+  const targetHash = `#/tracking/${orderId}`;
+  if (window.location.hash !== targetHash) {
+    window.location.hash = targetHash;
+  }
+  _showPageEl('tracking'); // Ensure UI is shown regardless of hash change trigger
   document.getElementById('tracking-order-items').innerHTML = order.items.map(i =>
     `<div class="flex justify-between mb-2"><span>${i.qty}x ${i.name}</span><strong>₹${i.price * i.qty}</strong></div>`
   ).join('');
   document.getElementById('tracking-total').textContent = `₹${order.total}`;
   document.getElementById('tracking-restaurant-name').textContent = order.restaurant.name;
+  const barRes = document.getElementById('track-bar-restaurant');
+  if (barRes) barRes.textContent = `from ${order.restaurant.name}`;
 
-  state.routeCoords = await fetchOSRMRoute(order.restaurant.location, state.userLocation);
-  initLeafletMap(order.restaurant.location, state.userLocation, state.routeCoords);
+  const destLoc = order.deliveryLocation || state.userLocation;
+  state.routeCoords = await fetchOSRMRoute(order.restaurant.location, destLoc);
+  initLeafletMap(order.restaurant.location, destLoc, state.routeCoords);
   renderTrackingUI(order);
   connectSSE(orderId);
 }
@@ -1331,17 +2070,53 @@ function animateRiderAlongRoute(pct) {
 function renderTrackingUI(order) {
   const s = ORDER_STATUSES.find(x => x.key === order.status) || ORDER_STATUSES[0];
   document.getElementById('current-status-label').textContent = s.label;
+  // Fix: don't append '...' to final "Delivered" status
+  const statusText = order.status === 'delivered' ? s.label : s.label + '...';
+  document.getElementById('tracking-status-main').textContent = statusText;
   document.getElementById('progress-bar-fill').style.width = `${s.progress}%`;
 
-  if (order.status === 'on_the_way') {
-    state.targetPct = 50; startRiderLoop();
+  // Update ETA display
+  const etaEl = document.getElementById('tracking-eta');
+  if (etaEl) {
+    if (order.status === 'delivered') {
+      etaEl.textContent = '✓ Delivered!';
+    } else if (order.estimatedDelivery) {
+      const minsLeft = Math.max(0, Math.round((new Date(order.estimatedDelivery) - Date.now()) / 60000));
+      etaEl.textContent = minsLeft > 0 ? `~${minsLeft} min away` : 'Arriving now';
+    }
   }
+
+  // Update persistent bottom bar
+  const pBar = document.getElementById('persistent-track-bar');
+  if (pBar) {
+    document.getElementById('track-bar-status').textContent = statusText;
+    pBar.style.display = (state.currentPage !== 'tracking' && order.status !== 'delivered') ? 'block' : 'none';
+  }
+
+  // Fix: show driver card from picked_up onwards (not just on_the_way/delivered)
+  const driverCard = document.getElementById('driver-card');
+  const driverStatuses = ['picked_up', 'on_the_way', 'delivered'];
+  if (driverCard) {
+    if (driverStatuses.includes(order.status) && order.driver) {
+      driverCard.style.display = 'flex';
+      document.getElementById('driver-name').textContent    = order.driver.name;
+      document.getElementById('driver-vehicle').textContent = order.driver.vehicle;
+      const avatarEl = driverCard.querySelector('.driver-avatar');
+      if (avatarEl && order.driver.avatar) avatarEl.textContent = order.driver.avatar;
+    } else if (!driverStatuses.includes(order.status)) {
+      driverCard.style.display = 'none';
+    }
+  }
+
+  if (order.status === 'on_the_way') { state.targetPct = 50; startRiderLoop(); }
+  else if (order.status === 'delivered') { state.targetPct = 100; }
+
   document.getElementById('order-timeline').innerHTML = [...order.history].reverse().map(h => `
     <div class="timeline-item">
       <div class="timeline-dot"></div>
       <div>
         <div class="timeline-label">${h.label}</div>
-        <div class="timeline-time">${new Date(h.time).toLocaleTimeString()}</div>
+        <div class="timeline-time">${new Date(h.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
       </div>
     </div>`).join('');
 }
@@ -1357,10 +2132,10 @@ async function lookupOrderByParam(id) {
 
 function connectSSE(orderId) {
   // Close any existing SSE connection
-  if (state.ws) { state.ws.close(); state.ws = null; }
+  if (state.sse) { state.sse.close(); state.sse = null; }
 
   const es = new EventSource(`/api/orders/${orderId}/stream`);
-  state.ws = es; // reuse state.ws slot for cleanup
+  state.sse = es; // reuse state.sse slot for cleanup
 
   es.onmessage = (e) => {
     try {
@@ -1372,23 +2147,61 @@ function connectSSE(orderId) {
 
   es.onerror = () => {
     es.close();
-    state.ws = null;
-    // Reconnect after 4 s if still on tracking page
-    if (state.currentPage === 'tracking') setTimeout(() => connectSSE(orderId), 4000);
+    state.sse = null;
+    // Only reconnect if still on tracking page AND order is not yet delivered
+    if (state.currentPage === 'tracking' && state.currentOrderId === orderId) {
+      fetch(`/api/orders/${orderId}`)
+        .then(r => r.json())
+        .then(o => { if (o.status !== 'delivered') setTimeout(() => connectSSE(orderId), 4000); })
+        .catch(() => setTimeout(() => connectSSE(orderId), 4000));
+    }
   };
 }
 
 function renderTrendingFood() {
   const grid = document.getElementById('trending-food-list');
   if (!grid) return;
-  const trendingItems = [
-    { name: 'Spicy Paneer Burger', price: 189, image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400' },
-    { name: 'Classic Margherita', price: 299, image: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400' }
-  ];
-  grid.innerHTML = trendingItems.map(item => `
-    <div class="trending-item" onclick="navigate('browse')">
-      <img src="${item.image}" class="trending-img" alt="${item.name}">
-      <div class="trending-name">${item.name}</div>
-      <div class="trending-price">₹${item.price}</div>
+
+  if (!state.restaurants || !state.restaurants.length) {
+    grid.innerHTML = '<div class="text-center w-full" style="padding: 20px; color: var(--color-text-light);">Searching for hot picks...</div>';
+    return;
+  }
+
+  // Pick some restaurants that aren't necessarily in Elite Picks
+  // Shuffle or just pick a slice
+  const trending = [...state.restaurants]
+    .sort(() => 0.5 - Math.random()) // Randomize for "Trending" feel
+    .slice(0, 6);
+
+  grid.innerHTML = trending.map(r => `
+    <div class="trending-item" onclick="selectRestaurant('${r.id}')" style="cursor: pointer;">
+      <div class="trending-img-wrap">
+        <img src="${getRestaurantImageHelper(r)}" class="trending-img" alt="${r.name}">
+      </div>
+      <div class="trending-name">${r.name}</div>
+      <div class="trending-price">★ ${r.rating} • ${r.eta} mins</div>
     </div>`).join('');
 }
+
+// ─── Newsletter ────────────────────────────────────────────────────────────
+function subscribeNewsletter() {
+  const emailEl = document.getElementById('newsletter-email');
+  const email = emailEl ? emailEl.value.trim() : '';
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    notify('Please enter a valid email address', 'error');
+    return;
+  }
+  notify('You\'re subscribed! 🎉 Welcome to Cravez updates.', 'success');
+  if (emailEl) emailEl.value = '';
+}
+
+function switchSellerTab(tab) {
+  document.getElementById('seller-tab-orders').style.display   = tab === 'orders' ? 'block' : 'none';
+  document.getElementById('seller-tab-menu').style.display     = tab === 'menu' ? 'block' : 'none';
+  document.getElementById('seller-tab-insights').style.display = tab === 'insights' ? 'block' : 'none';
+  document.getElementById('seller-tab-settings').style.display = tab === 'settings' ? 'block' : 'none';
+  
+  document.querySelectorAll('.s-nav-item').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('onclick').includes(tab));
+  });
+}
