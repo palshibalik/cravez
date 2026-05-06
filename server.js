@@ -8,7 +8,7 @@ const express   = require('express');
 const { randomBytes } = require('crypto');
 const path      = require('path');
 const mongoose  = require('mongoose');
-mongoose.set('bufferCommands', false); // Prevent hanging if DB fails
+// bufferCommands left at default — setting false crashes Vercel serverless cold starts
 const bcrypt    = require('bcryptjs');
 const jwt       = require('jsonwebtoken');
 const helmet    = require('helmet');
@@ -27,19 +27,15 @@ const JWT_SECRET = process.env.JWT_SECRET  || 'cravez_dev_secret_change_before_d
 // Each Vercel function invocation reuses the same connection if the instance is warm.
 let cachedConn = null;
 async function connectDB() {
-  // ⚡ Fast-path: if no Atlas URI is set, skip DB entirely → mock mode
-  // This prevents Vercel from hanging on a localhost connection attempt.
   if (!process.env.MONGODB_URI) {
-    console.warn('⚡ MONGODB_URI not set — running in Mock mode. Add it in Vercel → Settings → Environment Variables.');
+    console.warn('⚡ MONGODB_URI not set — Mock mode active.');
     return null;
   }
-
   if (cachedConn && mongoose.connection.readyState === 1) return cachedConn;
   if (mongoose.connection.readyState !== 1) cachedConn = null;
-
   try {
     cachedConn = await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 5000, // ✅ Reduced from 10s — fail fast on Vercel cold start
+      serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 10000,
       maxPoolSize: 5,
       minPoolSize: 1,
@@ -49,7 +45,7 @@ async function connectDB() {
   } catch (err) {
     cachedConn = null;
     console.error('❌ MongoDB connection failed:', err.message);
-    console.warn('🚀 Falling back to Mock mode. Check Atlas IP whitelist (allow 0.0.0.0/0 for Vercel).');
+    console.warn('🚀 Falling back to Mock mode. Check Atlas IP whitelist → allow 0.0.0.0/0');
     return null;
   }
 }
@@ -414,7 +410,6 @@ app.post('/api/auth/register', async (req, res) => {
     let db;
     try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-       // Mock Register — no DB configured or Atlas unreachable
        console.log('⚡ Mock registration triggered for:', name);
        const mockToken = jwt.sign({ id: 'mock_user_reg', name, email, role: role || 'customer' }, JWT_SECRET, { expiresIn: '7d' });
        return res.json({ token: mockToken, user: { id: 'mock_user_reg', name, email, role: role || 'customer', address } });
@@ -445,7 +440,6 @@ app.post('/api/auth/login', async (req, res) => {
     let db;
     try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-      // Mock Login — no DB configured or Atlas unreachable
       console.log('⚡ Mock login triggered for:', email);
       const mockToken = jwt.sign({ id: 'mock_user_123', name: 'Demo User', email, role: 'customer' }, JWT_SECRET, { expiresIn: '7d' });
       return res.json({ 
@@ -543,13 +537,38 @@ app.put('/api/orders/:id/status', verifyToken, async (req, res) => {
 app.get('/api/rider/dashboard', verifyToken, verifyRole('rider'), async (req, res) => {
   try {
     await connectDB();
-    // Orders that are 'ready' for pickup and don't have a driver assigned
     const pickups = await Order.find({ status: 'ready', 'driver.id': { $exists: false } }).limit(20);
-    
-    // Check if THIS rider already has an active task
     const activeTask = await Order.findOne({ status: 'picked_up', 'driver.id': req.user.id });
-    
     res.json({ pickups, activeTask });
+  } catch (e) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ✅ Frontend calls /api/rider/pickups — alias for the ready orders list
+app.get('/api/rider/pickups', verifyToken, verifyRole('rider'), async (req, res) => {
+  try {
+    let db;
+    try { db = await connectDB(); } catch(e) { db = null; }
+    if (!db) return res.json([]); // mock: no pickups available
+    const pickups = await Order.find({ status: 'ready', 'driver.id': { $exists: false } }).limit(20);
+    res.json(pickups);
+  } catch (e) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ✅ Frontend calls /api/rider/deliver/:id to mark an order delivered
+app.put('/api/rider/deliver/:id', verifyToken, verifyRole('rider'), async (req, res) => {
+  try {
+    let db;
+    try { db = await connectDB(); } catch(e) { db = null; }
+    if (!db) return res.json({ success: true }); // mock response
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    order.status = 'delivered';
+    order.history.push({ status: 'delivered', label: 'Delivered', time: new Date() });
+    // Credit rider ₹40
+    await User.findByIdAndUpdate(req.user.id, { $inc: { balance: 40 } });
+    await order.save();
+    ssePublish(String(order._id), { type: 'STATUS_UPDATE', order });
+    res.json({ success: true, order });
   } catch (e) { res.status(500).json({ error: 'Failed' }); }
 });
 
