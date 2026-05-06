@@ -27,15 +27,21 @@ const JWT_SECRET = process.env.JWT_SECRET  || 'cravez_dev_secret_change_before_d
 // Each Vercel function invocation reuses the same connection if the instance is warm.
 let cachedConn = null;
 async function connectDB() {
+  // ⚡ Fast-path: if no Atlas URI is set, skip DB entirely → mock mode
+  // This prevents Vercel from hanging on a localhost connection attempt.
+  if (!process.env.MONGODB_URI) {
+    console.warn('⚡ MONGODB_URI not set — running in Mock mode. Add it in Vercel → Settings → Environment Variables.');
+    return null;
+  }
+
   if (cachedConn && mongoose.connection.readyState === 1) return cachedConn;
-  // Reset cached conn if previous connection died
-  if (mongoose.connection.readyState === 0) cachedConn = null;
+  if (mongoose.connection.readyState !== 1) cachedConn = null;
 
   try {
     cachedConn = await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 10000, // 10s — enough for Vercel cold start
-      socketTimeoutMS: 45000,
-      maxPoolSize: 10,
+      serverSelectionTimeoutMS: 5000, // ✅ Reduced from 10s — fail fast on Vercel cold start
+      socketTimeoutMS: 10000,
+      maxPoolSize: 5,
       minPoolSize: 1,
     });
     console.log('☘️ MongoDB Connected');
@@ -43,9 +49,7 @@ async function connectDB() {
   } catch (err) {
     cachedConn = null;
     console.error('❌ MongoDB connection failed:', err.message);
-    // No localhost fallback on Vercel — it doesn't exist there and causes crashes.
-    // Routes using connectDB() will get null and use mock mode gracefully.
-    console.warn('🚀 Proceeding in "Mock / Offline" mode.');
+    console.warn('🚀 Falling back to Mock mode. Check Atlas IP whitelist (allow 0.0.0.0/0 for Vercel).');
     return null;
   }
 }
@@ -407,9 +411,10 @@ app.post('/api/auth/register', async (req, res) => {
   const userRole = validRoles.includes(role) ? role : 'customer';
 
   try {
-    const db = await connectDB();
+    let db;
+    try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-       // Mock Register for Dev
+       // Mock Register — no DB configured or Atlas unreachable
        console.log('⚡ Mock registration triggered for:', name);
        const mockToken = jwt.sign({ id: 'mock_user_reg', name, email, role: role || 'customer' }, JWT_SECRET, { expiresIn: '7d' });
        return res.json({ token: mockToken, user: { id: 'mock_user_reg', name, email, role: role || 'customer', address } });
@@ -437,9 +442,10 @@ app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
   try {
-    const db = await connectDB();
+    let db;
+    try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-      // Mock Login for Dev
+      // Mock Login — no DB configured or Atlas unreachable
       console.log('⚡ Mock login triggered for:', email);
       const mockToken = jwt.sign({ id: 'mock_user_123', name: 'Demo User', email, role: 'customer' }, JWT_SECRET, { expiresIn: '7d' });
       return res.json({ 
