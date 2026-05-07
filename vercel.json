@@ -1,4 +1,5 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "builds": [
     { "src": "server.js", "use": "@vercel/node", "config": { "maxDuration": 30 } },
@@ -11,7 +12,7 @@
   "routes": [
     { "src": "/api/(.*)", "dest": "/server.js" },
     { "src": "/uploads/(.*)", "dest": "/server.js" },
-    { "handle": "filesystem" },
+    { "src": "/(.*\\.(?:html|css|js|png|mp4|ico))", "dest": "/$1" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }

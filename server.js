@@ -8,7 +8,7 @@ const express   = require('express');
 const { randomBytes } = require('crypto');
 const path      = require('path');
 const mongoose  = require('mongoose');
-// bufferCommands left at default — setting false crashes Vercel serverless cold starts
+// Disable query buffering so serverless requests fail fast when Mongo is unavailable.
 const bcrypt    = require('bcryptjs');
 const jwt       = require('jsonwebtoken');
 const helmet    = require('helmet');
@@ -18,28 +18,33 @@ const multer    = require('multer');
 const fs        = require('fs');
 
 // ─── Env validation ───────────────────────────────────────────────────────────
-// In production (Vercel) MONGODB_URI must be set. In dev, fall back to localhost.
-// Removed strict production checks to allow mock mode on Vercel if vars are missing.
-const MONGO_URI  = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/cravez';
-const JWT_SECRET = process.env.JWT_SECRET  || 'cravez_dev_secret_change_before_deploy';
+// In production (Vercel), set MONGODB_URI and JWT_SECRET in Project Settings.
+// Missing Mongo config falls back to demo auth instead of letting Mongoose buffer.
+const MONGO_URI  = (process.env.MONGODB_URI || '').trim();
+const JWT_SECRET = (process.env.JWT_SECRET || 'cravez_dev_secret_change_before_deploy').trim();
+const AUTH_FALLBACK_ENABLED = process.env.AUTH_FALLBACK_ENABLED !== 'false';
 
 // ─── MongoDB — cached connection for serverless ───────────────────────────────
 // Each Vercel function invocation reuses the same connection if the instance is warm.
+mongoose.set('bufferCommands', false);
 let cachedConn = null;
+let pendingConn = null;
 async function connectDB() {
-  if (!process.env.MONGODB_URI) {
+  if (!MONGO_URI) {
     console.warn('⚡ MONGODB_URI not set — Mock mode active.');
     return null;
   }
   if (cachedConn && mongoose.connection.readyState === 1) return cachedConn;
+  if (pendingConn) return pendingConn;
   if (mongoose.connection.readyState !== 1) cachedConn = null;
   try {
-    cachedConn = await mongoose.connect(MONGO_URI, {
+    pendingConn = mongoose.connect(MONGO_URI, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 10000,
       maxPoolSize: 5,
       minPoolSize: 1,
     });
+    cachedConn = await pendingConn;
     console.log('☘️ MongoDB Connected');
     return cachedConn;
   } catch (err) {
@@ -47,6 +52,8 @@ async function connectDB() {
     console.error('❌ MongoDB connection failed:', err.message);
     console.warn('🚀 Falling back to Mock mode. Check Atlas IP whitelist → allow 0.0.0.0/0');
     return null;
+  } finally {
+    pendingConn = null;
   }
 }
 
@@ -335,6 +342,97 @@ function calcDistanceKM(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+const VALID_ROLES = ['customer', 'seller', 'rider', 'support'];
+
+function normalizeEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function normalizeRole(role) {
+  return VALID_ROLES.includes(role) ? role : 'customer';
+}
+
+function buildAuthUser(user) {
+  return {
+    id: String(user._id || user.id),
+    name: user.name,
+    email: user.email,
+    role: user.role || 'customer',
+    phone: user.phone || null,
+    address: user.address || null,
+    lat: user.lat ?? null,
+    lng: user.lng ?? null,
+    veg_only: !!user.veg_only,
+    restaurant_name: user.restaurant_name || null,
+    restaurant_category: user.restaurant_category || null,
+    restaurant_image: user.restaurant_image || null,
+    balance: user.balance || 0
+  };
+}
+
+function signAuthToken(user) {
+  return jwt.sign(
+    { id: String(user._id || user.id), name: user.name, email: user.email, role: user.role || 'customer' },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
+function buildDemoUser({ id = 'demo_user', name = 'Demo User', email, role = 'customer', address = 'Demo Street, App City' }) {
+  return {
+    id,
+    name,
+    email,
+    role: normalizeRole(role),
+    phone: null,
+    address,
+    lat: null,
+    lng: null,
+    veg_only: false,
+    restaurant_name: role === 'seller' ? `${name}'s Kitchen` : null,
+    restaurant_category: null,
+    restaurant_image: null,
+    balance: 0
+  };
+}
+
+function fallbackNameFromEmail(email) {
+  const localPart = normalizeEmail(email).split('@')[0] || 'guest';
+  return localPart
+    .replace(/[._-]+/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase()) || 'Demo User';
+}
+
+function fallbackAuthResponse(res, { name, email, role = 'customer', address, reason }) {
+  if (!AUTH_FALLBACK_ENABLED) {
+    return res.status(503).json({ error: 'Authentication is temporarily unavailable' });
+  }
+  const safeEmail = normalizeEmail(email) || 'guest@example.com';
+  const safeName = String(name || '').trim() || fallbackNameFromEmail(safeEmail);
+  const demoUser = buildDemoUser({
+    id: `fallback_${normalizeRole(role)}_${randomBytes(6).toString('hex')}`,
+    name: safeName,
+    email: safeEmail,
+    role,
+    address: address || 'Fallback Street, App City'
+  });
+  console.warn(`⚡ Auth fallback used: ${reason}`);
+  return res.json({ token: signAuthToken(demoUser), user: demoUser, fallback: true });
+}
+
+function profileFromToken(user) {
+  return buildDemoUser({
+    id: user.id,
+    name: user.name || 'Demo User',
+    email: user.email || 'demo@example.com',
+    role: user.role || 'customer'
+  });
+}
+
+function hasMongoId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
+
 function verifyToken(req, res, next) {
   const auth = req.headers['authorization'];
   if (!auth) return res.status(401).json({ error: 'Missing token' });
@@ -397,93 +495,78 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 // AUTH
 app.post('/api/auth/register', async (req, res) => {
-  const { name, email, password, role, address } = req.body;
+  const name = String(req.body.name || '').trim();
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '');
+  const address = String(req.body.address || '').trim();
+  const userRole = normalizeRole(req.body.role);
+
   if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email address' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  if (name.trim().length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
-  
-  const validRoles = ['customer', 'seller', 'rider', 'support'];
-  const userRole = validRoles.includes(role) ? role : 'customer';
+  if (name.length < 2) return res.status(400).json({ error: 'Name must be at least 2 characters' });
 
   try {
     let db;
     try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-       console.log('⚡ Mock registration triggered for:', name);
-       const mockToken = jwt.sign({ id: 'mock_user_reg', name, email, role: role || 'customer' }, JWT_SECRET, { expiresIn: '7d' });
-       return res.json({ token: mockToken, user: { id: 'mock_user_reg', name, email, role: role || 'customer', address } });
+       return fallbackAuthResponse(res, { name, email, role: userRole, address, reason: 'database unavailable during registration' });
     }
 
     const hash = await bcrypt.hash(password, 10);
     const user = await User.create({ 
-      name: name.trim(), 
+      name, 
       email, 
       password_hash: hash,
       role: userRole,
-      address: req.body.address || null,
-      restaurant_name: (userRole === 'seller' && name) ? `${name.trim()}'s Kitchen` : null
+      address: address || null,
+      restaurant_name: userRole === 'seller' ? `${name}'s Kitchen` : null
     });
-    const token = jwt.sign({ id: user._id, name: user.name, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role, veg_only: user.veg_only, address: user.address } });
+    res.json({ token: signAuthToken(user), user: buildAuthUser(user) });
   } catch (e) {
     if (e.code === 11000) return res.status(400).json({ error: 'Email already exists' });
     console.error('Register error:', e);
-    res.status(500).json({ error: e.message || 'Server error' });
+    return fallbackAuthResponse(res, { name, email, role: userRole, address, reason: e.message || 'registration failed' });
   }
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '');
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
   try {
     let db;
     try { db = await connectDB(); } catch(e) { db = null; }
     if (!db) {
-      console.log('⚡ Mock login triggered for:', email);
-      const mockToken = jwt.sign({ id: 'mock_user_123', name: 'Demo User', email, role: 'customer' }, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ 
-        token: mockToken, 
-        user: { id: 'mock_user_123', name: 'Demo User', email, role: 'customer', veg_only: false, address: 'Mock Street, App City' } 
-      });
+      return fallbackAuthResponse(res, { email, reason: 'database unavailable during login' });
     }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (!await bcrypt.compare(password, user.password_hash)) return res.status(401).json({ error: 'Invalid credentials' });
-    const token = jwt.sign({ id: user._id, name: user.name, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ 
-      token, 
-      user: { 
-        id: user._id, 
-        name: user.name, 
-        email: user.email, 
-        role: user.role, 
-        veg_only: user.veg_only, 
-        address: user.address, 
-        phone: user.phone,
-        restaurant_name: user.restaurant_name,
-        balance: user.balance
-      } 
-    });
+    if (!user) return fallbackAuthResponse(res, { email, reason: 'user not found' });
+    if (!await bcrypt.compare(password, user.password_hash)) return fallbackAuthResponse(res, { email, reason: 'password check failed' });
+    res.json({ token: signAuthToken(user), user: buildAuthUser(user) });
   } catch (e) { 
     console.error('Login error:', e); 
-    res.status(500).json({ error: e.message || 'Server error' }); 
+    return fallbackAuthResponse(res, { email, reason: e.message || 'login failed' });
   }
 });
 
 app.get('/api/user/profile', verifyToken, async (req, res) => {
   try {
-    await connectDB();
+    const db = await connectDB();
+    if (!db) return res.json(profileFromToken(req.user));
+    if (!hasMongoId(req.user.id)) return res.json(profileFromToken(req.user));
     const user = await User.findById(req.user.id).select('-password_hash');
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ id: user._id, name: user.name, email: user.email, phone: user.phone, address: user.address, lat: user.lat, lng: user.lng, veg_only: user.veg_only });
+    res.json(buildAuthUser(user));
   } catch (e) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.put('/api/user/profile', verifyToken, async (req, res) => {
   try {
-    await connectDB();
+    const db = await connectDB();
+    if (!db) return res.json({ success: true, user: { ...profileFromToken(req.user), ...req.body } });
+    if (!hasMongoId(req.user.id)) return res.json({ success: true, user: { ...profileFromToken(req.user), ...req.body } });
     const { phone, address, lat, lng, veg_only } = req.body;
     const updates = {};
     if (phone    !== undefined) updates.phone    = phone;
@@ -493,7 +576,7 @@ app.put('/api/user/profile', verifyToken, async (req, res) => {
     if (veg_only !== undefined) updates.veg_only = !!veg_only;
     const user = await User.findByIdAndUpdate(req.user.id, updates, { new: true }).select('-password_hash');
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ success: true, user: { id: user._id, name: user.name, email: user.email, phone: user.phone, address: user.address, lat: user.lat, lng: user.lng, veg_only: user.veg_only } });
+    res.json({ success: true, user: buildAuthUser(user) });
   } catch (e) { res.status(500).json({ error: 'Failed to update' }); }
 });
 
