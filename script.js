@@ -76,27 +76,35 @@ function getFoodImage(index) {
 // ─── Video Cinema Engine ──────────────────────────────────────────────────
 const HERO_VIDEOS = [
   'hero-1.mp4',
-  'hero-2.mp4',
   'hero-3.mp4',
   'hero-4.mp4'
 ];
 let currentVideoIdx = 0;
+let availableHeroVideos = [...HERO_VIDEOS];
 
 function initVideoRotator() {
   const v1 = document.getElementById('video-primary');
   const v2 = document.getElementById('video-secondary');
   if (!v1 || !v2) return;
 
-  v1.src = HERO_VIDEOS[0];
+  v1.onerror = () => v1.classList.remove('active');
+  v2.onerror = () => {
+    availableHeroVideos = availableHeroVideos.filter(src => src !== v2.getAttribute('src'));
+    v2.removeAttribute('src');
+    v2.load();
+  };
+
+  v1.src = availableHeroVideos[0];
   v1.classList.add('active');
 
   // Cross-fade every 8 seconds
   setInterval(() => {
-    const nextIdx = (currentVideoIdx + 1) % HERO_VIDEOS.length;
+    if (availableHeroVideos.length < 2) return;
+    const nextIdx = (currentVideoIdx + 1) % availableHeroVideos.length;
     const active = v1.classList.contains('active') ? v1 : v2;
     const next   = v1.classList.contains('active') ? v2 : v1;
 
-    next.src = HERO_VIDEOS[nextIdx];
+    next.src = availableHeroVideos[nextIdx];
     next.onloadeddata = () => {
       active.classList.remove('active');
       next.classList.add('active');
@@ -750,6 +758,7 @@ function handleLogout() {
 }
 
 async function fetchProfile() {
+  if (!state.token || state.token.startsWith('local_fallback_')) return;
   try {
     const res = await fetch('/api/user/profile', { headers: { Authorization: `Bearer ${state.token}` } });
     if (res.ok) {
