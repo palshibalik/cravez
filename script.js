@@ -14,6 +14,8 @@ const state = {
   cart: {},
   currentOrderId: null,
   sse: null,
+  sellerOrderPollTimer: null,
+  sellerKnownOrderIds: new Set(),
   discountStatus: { applied: false, amount: 0, code: '' },
 
   // Geolocation
@@ -1127,8 +1129,9 @@ async function loadSellerDashboard() {
   
   await Promise.all([
     fetchSellerMenu(),
-    fetchSellerOrders()
+    fetchSellerOrders({ initial: true })
   ]);
+  startSellerOrderPolling();
 }
 
 async function fetchSellerMenu() {
@@ -1204,6 +1207,70 @@ function renderSellerOrders(orders) {
       </div>
     </div>
   `).join('');
+}
+
+function startSellerOrderPolling() {
+  if (state.sellerOrderPollTimer) clearInterval(state.sellerOrderPollTimer);
+  state.sellerOrderPollTimer = setInterval(() => {
+    if (state.currentPage === 'seller-dashboard' && state.user?.role === 'seller') {
+      fetchSellerOrders({ initial: false });
+    }
+  }, 8000);
+}
+
+async function fetchSellerOrders({ initial = false } = {}) {
+  try {
+    const res = await fetch('/api/seller/orders', { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error('seller orders failed');
+    const orders = await res.json();
+    const incomingIds = new Set(orders.map(o => String(o.id || o._id)));
+    const newOrders = orders.filter(o => {
+      const id = String(o.id || o._id);
+      return id && !state.sellerKnownOrderIds.has(id);
+    });
+
+    renderSellerOrders(orders);
+
+    document.getElementById('seller-stat-orders').textContent = orders.length;
+    const total = orders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    document.getElementById('seller-stat-earnings').textContent = `₹${total}`;
+
+    if (!initial && newOrders.length > 0 && state.sellerKnownOrderIds.size > 0) {
+      const latest = newOrders[0];
+      notify(`New order placed: #${String(latest.id || latest._id).slice(-6)}`, 'success');
+      switchSellerTab('orders');
+    }
+
+    state.sellerKnownOrderIds = incomingIds;
+  } catch (e) { notify('Failed to load orders', 'error'); }
+}
+
+function renderSellerOrders(orders) {
+  const list = document.getElementById('seller-orders-list');
+  if (!list) return;
+
+  if (!orders.length) {
+    list.innerHTML = '<div class="empty-state"><p>No orders yet.</p></div>';
+    return;
+  }
+
+  list.innerHTML = orders.map(o => {
+    const id = String(o.id || o._id);
+    return `
+      <div class="order-row">
+        <div class="order-info">
+          <h4>Order #${id.slice(-6)}</h4>
+          <p class="text-xs text-muted">${(o.items || []).map(i => `${i.qty}x ${i.name}`).join(', ')}</p>
+          <div class="mt-2"><span class="status-pill-id">${String(o.status || 'placed').toUpperCase()}</span></div>
+        </div>
+        <div class="order-status-actions">
+          ${o.status === 'placed' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${id}', 'confirmed')">Confirm</button>` : ''}
+          ${o.status === 'confirmed' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${id}', 'preparing')">Prepare</button>` : ''}
+          ${o.status === 'preparing' ? `<button class="btn btn-primary btn-sm" onclick="updateOrderStatus('${id}', 'ready')">Ready</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function showAddMenuModal() { 
@@ -1307,11 +1374,14 @@ async function saveSellerProfile() {
 
 async function updateOrderStatus(orderId, status) {
   try {
-    // In a real app, we'd have an endpoint for this. 
-    // For now, we'll simulate it or use a generic update endpoint if available.
-    // The current server.js has auto-progression, but we can add manual override.
+    const res = await fetch(`/api/orders/${orderId}/status`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    if (!res.ok) throw new Error('status update failed');
     notify(`Order status updated to ${status}`, 'success');
-    fetchSellerOrders();
+    fetchSellerOrders({ initial: true });
   } catch (e) { notify('Failed to update status', 'error'); }
 }
 

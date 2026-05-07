@@ -623,6 +623,16 @@ app.put('/api/user/profile', verifyToken, async (req, res) => {
 // ORDER ACTIONS (Connected Lifecycle)
 app.put('/api/orders/:id/status', verifyToken, async (req, res) => {
   try {
+    if (fallbackOrders.has(req.params.id)) {
+      const order = fallbackOrders.get(req.params.id);
+      const { status } = req.body;
+      order.status = status;
+      order.history.push({ status, label: `Order ${status}`, time: new Date() });
+      fallbackOrders.set(order.id, order);
+      ssePublish(order.id, { type: 'STATUS_UPDATE', order });
+      return res.json({ success: true, order });
+    }
+
     await connectDB();
     const { status } = req.body;
     const order = await Order.findById(req.params.id);
@@ -804,6 +814,36 @@ app.put('/api/seller/profile', verifyToken, verifyRole('seller'), async (req, re
     }, { new: true });
     res.json(user);
   } catch (e) { res.json({ ...profileFromToken(req.user), restaurant_name, restaurant_category, restaurant_image }); }
+});
+
+app.get('/api/seller/orders', verifyToken, verifyRole('seller'), async (req, res) => {
+  try {
+    const db = await connectDBWithin(1200);
+    if (!db || !hasMongoId(req.user.id)) {
+      return res.json(Array.from(fallbackOrders.values()).sort((a, b) => {
+        const aTime = new Date(a.history?.[0]?.time || 0).getTime();
+        const bTime = new Date(b.history?.[0]?.time || 0).getTime();
+        return bTime - aTime;
+      }));
+    }
+
+    const orders = await Order.find({ restaurant_id: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json(orders.map(o => ({
+      id: String(o._id),
+      status: o.status,
+      total: o.total,
+      items: o.items,
+      restaurantName: o.real_restaurant_name,
+      address: o.address,
+      date: o.createdAt
+    })));
+  } catch (e) {
+    console.warn('⚡ Seller orders fallback used:', e.message);
+    res.json(Array.from(fallbackOrders.values()));
+  }
 });
 
 app.get('/api/restaurants', async (req, res) => {
