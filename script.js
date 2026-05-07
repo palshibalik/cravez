@@ -874,6 +874,55 @@ const CLIENT_FALLBACK_RESTAURANTS = [
   { id:'f8', name:'Sweet Retreat',    cuisine:'Desserts, Bakery',     eta:'10-15', rating:4.9, isVeg:true,  image:'https://images.unsplash.com/photo-1551024601-bec78aea704b?w=600&q=80', location:{lat:28.6250,lng:77.2100}, distance:'2.1', category:'dessert',  featuredItems:['Velvet Cupcakes','Macaron Box','Belgian Waffles'] },
 ];
 
+const CLIENT_FALLBACK_MENUS = {
+  pizza: [
+    { name:'Margherita Pizza', price:299, desc:'Classic pizza with fresh basil and mozzarella.', isVeg:true, image:'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=400' },
+    { name:'Pepperoni Overload', price:449, desc:'Spicy pepperoni with extra cheese.', isVeg:false, image:'https://images.unsplash.com/photo-1628840042765-356cda07504e?w=400' },
+    { name:'Farmhouse Special', price:399, desc:'Mushrooms, olives, bell peppers, and corn.', isVeg:true, image:'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=400' }
+  ],
+  burger: [
+    { name:'Classic Smash Burger', price:199, desc:'Double patty, onions, and secret sauce.', isVeg:false, image:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400' },
+    { name:'Crispy Paneer Burger', price:179, desc:'Spiced paneer patty with peri-peri mayo.', isVeg:true, image:'https://images.unsplash.com/photo-1550547660-d9450f859349?w=400' },
+    { name:'Peri Peri Fries', price:129, desc:'Crispy fries tossed in spicy peri-peri dust.', isVeg:true, image:'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400' }
+  ],
+  biryani: [
+    { name:'Chicken Dum Biryani', price:349, desc:'Fragrant basmati with slow-cooked chicken.', isVeg:false, image:'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=400' },
+    { name:'Paneer Dum Biryani', price:319, desc:'A rich vegetarian dum biryani.', isVeg:true, image:'https://images.unsplash.com/photo-1633945274405-b6c8069047b0?w=400' },
+    { name:'Butter Kulcha', price:89, desc:'Soft tandoor bread brushed with butter.', isVeg:true, image:'https://images.unsplash.com/photo-1626074353765-517a681e40be?w=400' }
+  ],
+  chinese: [
+    { name:'Schezwan Fried Rice', price:229, desc:'Tossed in fiery schezwan sauce.', isVeg:true, image:'https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=400' },
+    { name:'Chicken Manchurian', price:289, desc:'Crispy chicken in soy garlic gravy.', isVeg:false, image:'https://images.unsplash.com/photo-1585032226651-759b368d7246?w=400' },
+    { name:'Hakka Noodles', price:209, desc:'Stir fried noodles with fresh vegetables.', isVeg:true, image:'https://images.unsplash.com/photo-1585032226651-759b368d7246?w=400' }
+  ],
+  healthy: [
+    { name:'Quinoa Salad', price:299, desc:'Olives, feta, cucumber, and lemon vinaigrette.', isVeg:true, image:'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=400' },
+    { name:'Grilled Chicken Bowl', price:349, desc:'Chicken with brown rice and greens.', isVeg:false, image:'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400' },
+    { name:'Avocado Toast', price:399, desc:'Sourdough with smashed avocado.', isVeg:true, image:'https://images.unsplash.com/photo-1525351484163-7529414344d8?w=400' }
+  ],
+  dessert: [
+    { name:'Death by Chocolate', price:199, desc:'Triple layer chocolate cake with fudge.', isVeg:true, image:'https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=400' },
+    { name:'NY Cheesecake', price:249, desc:'Creamy cheesecake with berry compote.', isVeg:true, image:'https://images.unsplash.com/photo-1533134242443-d4fd215305ad?w=400' },
+    { name:'Belgian Waffles', price:229, desc:'Warm waffles with chocolate sauce.', isVeg:true, image:'https://images.unsplash.com/photo-1562376552-0d160a2f238d?w=400' }
+  ],
+  snacks: [
+    { name:'Peri Peri Fries', price:129, desc:'Crispy fries tossed in spicy peri-peri dust.', isVeg:true, image:'https://images.unsplash.com/photo-1573080496219-bb080dd4f877?w=400' },
+    { name:'Cheese Nachos', price:179, desc:'Corn chips with cheese and jalapenos.', isVeg:true, image:'https://images.unsplash.com/photo-1513456852971-30c0b8199d4d?w=400' },
+    { name:'Chicken Wings', price:299, desc:'Buffalo style wings with dip.', isVeg:false, image:'https://images.unsplash.com/photo-1608039829572-78524f79c4c7?w=400' }
+  ],
+  cafe: [
+    { name:'Iced Americano', price:189, desc:'Double shot espresso over ice.', isVeg:true, image:'https://images.unsplash.com/photo-1517701604599-bb29b565090c?w=400' },
+    { name:'Caramel Macchiato', price:249, desc:'Milk, vanilla, espresso, and caramel.', isVeg:true, image:'https://images.unsplash.com/photo-1485808191679-5f86510681a2?w=400' },
+    { name:'Croissant Classic', price:159, desc:'Warm buttery flaky pastry.', isVeg:true, image:'https://images.unsplash.com/photo-1555507036-ab1f40ce88cb?w=400' }
+  ]
+};
+
+function getClientFallbackMenu(restaurant) {
+  const category = restaurant?.category || 'snacks';
+  const menu = CLIENT_FALLBACK_MENUS[category] || CLIENT_FALLBACK_MENUS.snacks;
+  return menu.map((item, idx) => ({ ...item, id: `client_${restaurant?.id || 'menu'}_${idx}` }));
+}
+
 async function loadRestaurants() {
   if (state.isLoadingRestaurants) return;
   state.isLoadingRestaurants = true;
@@ -1815,6 +1864,7 @@ async function selectRestaurant(id, fromRouter = false) {
     const res = await fetch(`/api/restaurants/${id}/menu?category=${category}&name=${nameParam}`);
     if (!res.ok) throw new Error('menu fetch failed');
     state.menu = await res.json();
+    if (!Array.isArray(state.menu) || state.menu.length === 0) throw new Error('empty menu');
     renderMenu();
     
     if (!fromRouter) {
@@ -1822,8 +1872,16 @@ async function selectRestaurant(id, fromRouter = false) {
     } else {
       _showPageEl('menu');
     }
-  } catch {
-    notify('Failed to load menu', 'error');
+  } catch (err) {
+    console.warn('Menu API unavailable, using fallback menu:', err);
+    state.menu = getClientFallbackMenu(state.selectedRestaurant);
+    renderMenu();
+
+    if (!fromRouter) {
+      navigate('menu', id);
+    } else {
+      _showPageEl('menu');
+    }
   }
 }
 
